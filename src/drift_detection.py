@@ -355,9 +355,9 @@ def compute_drift_score(
         batch_size: int = 64,
         num_workers: int = 0,
         eval_ks: tuple = (1, 5, 10),
-        weight_embedding: float = 0.50,
-        weight_recall: float = 0.25,
-        weight_consistency: float = 0.25,
+        weight_embedding: float = 0.20,
+        weight_recall: float = 0.4,
+        weight_consistency: float = 0.4,
 ) -> DriftResult:
     """
     Weights must sum to 1.0.  Defaults match the original 50/25/25 split.

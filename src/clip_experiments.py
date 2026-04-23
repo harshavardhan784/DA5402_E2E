@@ -3,25 +3,40 @@ src/models/clip_experiments.py
 -------------------------------
 Three CLIP training modes with full MLflow artifact logging.
 
-All models, embeddings, metrics, and checkpoints go to MLflow — nothing
-is kept only on local disk.
-
-MLflow artifact layout per run:
+MLflow artifact layout per run
+────────────────────────────────
   artifacts/
-    model/                    ← mlflow.pytorch.log_model
-    checkpoints/              ← state_dicts at exponential epochs + best
-    embeddings/               ← val image + text embedding .npy files
+    model/                        ← mlflow.pytorch.log_model
+    checkpoints/                  ← state_dicts at exponential epochs + best
+    embeddings/                   ← val image + text embedding .npy files
     drift/
-      drift_reference.json    ← baseline stats + final metrics for drift detection
-      baseline_text_centroid.npy  ← averaged text embedding vector (mode-specific space)
-    confusion/                ← retrieval failure analysis CSV
+      drift_reference.json        ← baseline stats + final metrics
+      baseline_text_centroid.npy
+      baseline_image_centroid.npy
+    confusion/                    ← retrieval failure analysis CSV
+    provenance/                   ← week provenance JSON (written by DAG)
     eval_metrics_<label>.json
     requirements.txt
+
+MLflow tags set on every run (searchable, used by DAG for model selection)
+───────────────────────────────────────────────────────────────────────────
+  pipeline     = "clip_product_retrieval"
+  mode         = "zero_shot" | "linear_probe" | "finetune"
+  stage        = "initial_train" | "retrain" | "pre_retrain_eval"
+  week_label   = e.g. "week1"
+  trained_on   = stem of the CSV used for training, e.g. "week1_replay"
+                 (empty string for zero_shot — no training involved)
+
+MLflow params set on every training run
+────────────────────────────────────────
+  n_train_images, n_val_images, n_train_rows, n_val_rows
+  (logged inside _build_loaders so they appear on every mode that trains)
 """
 
 import os
 os.environ["MLFLOW_CONFIGURE_LOGGING"] = "0"
 
+import importlib.metadata
 import io
 import json
 import math
@@ -60,9 +75,27 @@ except ImportError:
     def tqdm(it, **kw): return it
 
 log = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO,
-                    format="%(asctime)s  %(levelname)s  %(message)s",
-                    datefmt="%H:%M:%S")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(levelname)s  %(message)s",
+    datefmt="%H:%M:%S",
+)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DYNAMIC PACKAGE VERSION HELPER
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _pkg_version(name: str, fallback: str = "unknown") -> str:
+    """
+    Return the installed version of a package at runtime.
+    Falls back to `fallback` if the package is not found.
+    Used by _log_model_pytorch so pip_requirements is always accurate.
+    """
+    try:
+        return importlib.metadata.version(name)
+    except importlib.metadata.PackageNotFoundError:
+        return fallback
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -103,21 +136,18 @@ class Config:
     checkpoint_dir:         str   = "checkpoints"
     top_failures:           int   = 20
     week_label:             str   = "week1"
-    category_label:         str   = "mens_wear"
+    category_label:         str   = "all"      # "all" = no filter applied
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# EXPONENTIAL EPOCH SET
+# EXPONENTIAL CHECKPOINT EPOCHS
 # ─────────────────────────────────────────────────────────────────────────────
 
 def exponential_checkpoint_epochs(total_epochs: int) -> set:
     """
-    Returns checkpoint epochs as powers of 2 strictly less than total_epochs,
-    plus total_epochs itself.
-
-      total_epochs=10  → {2, 4, 8, 10}
-      total_epochs=32  → {2, 4, 8, 16, 32}
-      total_epochs=5   → {2, 4, 5}
+    Powers of 2 strictly less than total_epochs, plus total_epochs itself.
+      10 → {2, 4, 8, 10}
+      32 → {2, 4, 8, 16, 32}
     """
     epochs, k = set(), 1
     while True:
@@ -169,7 +199,7 @@ def split_by_index(df: pd.DataFrame, val_fraction: float = 0.15,
     ids = df["original_index"].unique()
     rng = np.random.default_rng(seed)
     rng.shuffle(ids)
-    n_val = max(1, int(len(ids) * val_fraction))
+    n_val     = max(1, int(len(ids) * val_fraction))
     val_ids   = set(ids[:n_val])
     train_ids = set(ids[n_val:])
     return (df[df["original_index"].isin(train_ids)].copy(),
@@ -183,7 +213,7 @@ class CLIPProductDataset(Dataset):
         self.tokenizer  = tokenizer
         self.cache_dir  = cache_dir
         self.is_train   = (mode == "train")
-        self.groups = {}
+        self.groups     = {}
         for idx, grp in df.groupby("original_index"):
             texts   = grp["augmented_text"].tolist()
             methods = grp["method"].tolist()
@@ -196,7 +226,7 @@ class CLIPProductDataset(Dataset):
     def __len__(self): return len(self.indices)
 
     def __getitem__(self, i):
-        g = self.groups[self.indices[i]]
+        g   = self.groups[self.indices[i]]
         img = load_image(g["url"], self.cache_dir)
         if img is None:
             return None
@@ -271,6 +301,10 @@ class LinearProbeHead(nn.Module):
 
 @torch.no_grad()
 def compute_embeddings(model, dataloader, device, probe_head=None):
+    """
+    Returns (img_embs, txt_embs, orig_idx_list).
+    Callers must unpack all three values.
+    """
     model.eval()
     if probe_head is not None:
         probe_head.eval()
@@ -300,11 +334,11 @@ def consistency_at_k(img_embs, txt_embs, ks=(1, 5, 10)):
     mask = torch.eye(N, dtype=torch.bool)
     i_sim = img_embs @ img_embs.T;  i_sim[mask] = -1e9
     t_sim = txt_embs @ img_embs.T;  t_sim[mask] = -1e9
-    out = {}
+    out   = {}
     for k in ks:
-        k_eff = min(k, N - 1)
-        top_i = i_sim.topk(k_eff, dim=1).indices
-        top_t = t_sim.topk(k_eff, dim=1).indices
+        k_eff  = min(k, N - 1)
+        top_i  = i_sim.topk(k_eff, dim=1).indices
+        top_t  = t_sim.topk(k_eff, dim=1).indices
         scores = [len(set(top_i[i].tolist()) & set(top_t[i].tolist())) / k_eff
                   for i in range(N)]
         out[f"Consistency@{k}"] = float(np.mean(scores))
@@ -322,28 +356,13 @@ def evaluate(model, loader, device, ks=(1, 5, 10), probe_head=None, label="eval"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# DRIFT BASELINE — computed from already-materialised embedding tensors
+# DRIFT BASELINE
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _compute_embedding_stats(embs: np.ndarray) -> dict:
-    """
-    Compute distribution statistics from an (N, D) embedding matrix.
-    These are the numbers that drift_detection.py will compare against.
-
-    Returns
-    -------
-    dict with keys:
-        n_samples               int
-        embed_dim               int
-        cosine_to_centroid_mean float  — mean cos-sim of each vector to centroid
-        cosine_to_centroid_std  float
-        pairwise_cosine_mean    float  — mean off-diagonal pairwise cos-sim (≤500 subsample)
-        dim_mean                list   — D-dim centroid (unit-normed), used as reference vector
-        dim_std                 list   — D-dim per-dimension std
-    """
     centroid      = embs.mean(axis=0)
     centroid_norm = centroid / (np.linalg.norm(centroid) + 1e-9)
-    cos_to_centroid = embs @ centroid_norm               # (N,)
+    cos_to_centroid = embs @ centroid_norm
 
     sub = embs[:500] if len(embs) > 500 else embs
     sim_mat = sub @ sub.T
@@ -351,117 +370,89 @@ def _compute_embedding_stats(embs: np.ndarray) -> dict:
     pairwise_mean = float(np.nanmean(sim_mat))
 
     return {
-        "n_samples":                len(embs),
-        "embed_dim":                int(embs.shape[1]),
-        "cosine_to_centroid_mean":  float(cos_to_centroid.mean()),
-        "cosine_to_centroid_std":   float(cos_to_centroid.std()),
-        "pairwise_cosine_mean":     pairwise_mean,
-        "dim_mean":                 centroid_norm.tolist(),   # D-dim — logged as .npy too
-        "dim_std":                  embs.std(axis=0).tolist(),
+        "n_samples":               len(embs),
+        "embed_dim":               int(embs.shape[1]),
+        "cosine_to_centroid_mean": float(cos_to_centroid.mean()),
+        "cosine_to_centroid_std":  float(cos_to_centroid.std()),
+        "pairwise_cosine_mean":    pairwise_mean,
+        "dim_mean":                centroid_norm.tolist(),
+        "dim_std":                 embs.std(axis=0).tolist(),
     }
 
 
-def build_drift_reference(
-        txt_embs: torch.Tensor,
-        img_embs: torch.Tensor,
-        metrics: dict,
-        cfg: Config,
-        run_id: str,
-) -> dict:
-    """
-    Build the drift reference dict that will be stored as
-    artifacts/drift/drift_reference.json in the current MLflow run.
-
-    What each section is for
-    ─────────────────────────
-    run_info      — lets drift_detection.py reload the exact model + probe from
-                    the same run_id, so new data is encoded in the *same space*.
-
-    embedding_stats (text + image) — the baseline distribution.
-                    drift_detection.py encodes new data through the same model,
-                    computes the same stats, and compares (Signal 1, 50 % weight).
-
-    baseline_metrics — the Recall@K / Consistency@K values at training time.
-                    A drop > 15 % on any metric on new data fires Signal 2
-                    (50 % weight: Recall@1 25 %, Recall@5 25 %,
-                     Consistency@1 25 %, Consistency@5 25 %).
-
-    Per-mode embedding space
-    ─────────────────────────
-    zero_shot     → raw CLIP text + image embeddings (no adaptation layer)
-    linear_probe  → text + image embeddings *after* LinearProbeHead
-                    (the probe transforms the CLIP space; we must compare in
-                    the same transformed space, not raw CLIP)
-    finetune      → text + image embeddings from the fine-tuned encoder
-    """
+def build_drift_reference(txt_embs, img_embs, metrics, cfg, run_id):
     txt_np = txt_embs.numpy()
     img_np = img_embs.numpy()
-
-    reference = {
+    return {
         "run_info": {
-            "run_id":        run_id,
-            "mode":          cfg.mode,
-            "model_name":    cfg.model_name,
-            "pretrained":    cfg.pretrained,
-            "embed_dim":     cfg.embed_dim,
-            "probe_hidden":  cfg.probe_hidden,
-            "probe_dropout": cfg.probe_dropout,
-            "week_label":    cfg.week_label,
+            "run_id":         run_id,
+            "mode":           cfg.mode,
+            "model_name":     cfg.model_name,
+            "pretrained":     cfg.pretrained,
+            "embed_dim":      cfg.embed_dim,
+            "probe_hidden":   cfg.probe_hidden,
+            "probe_dropout":  cfg.probe_dropout,
+            "week_label":     cfg.week_label,
             "category_label": cfg.category_label,
-            # Enough to reconstruct LinearProbeHead or reload finetune checkpoint
+            "trained_on":     Path(cfg.csv_path).stem,
         },
         "text_embedding_stats":  _compute_embedding_stats(txt_np),
         "image_embedding_stats": _compute_embedding_stats(img_np),
         "baseline_metrics": {
-            # Keep only the four metrics that feed into Signal 2
-            "Recall@1":       metrics.get("Recall@1",       0.0),
-            "Recall@5":       metrics.get("Recall@5",       0.0),
-            "Consistency@1":  metrics.get("Consistency@1",  0.0),
-            "Consistency@5":  metrics.get("Consistency@5",  0.0),
+            "Recall@1":      metrics.get("Recall@1",      0.0),
+            "Recall@5":      metrics.get("Recall@5",      0.0),
+            "Consistency@1": metrics.get("Consistency@1", 0.0),
+            "Consistency@5": metrics.get("Consistency@5", 0.0),
         },
     }
-    return reference
 
 
-def _log_drift_reference(
-        txt_embs: torch.Tensor,
-        img_embs: torch.Tensor,
-        metrics: dict,
-        cfg: Config,
-        run_id: str,
-):
-    """
-    Compute and log the drift reference to MLflow artifacts/drift/.
-
-    Logs:
-      drift/drift_reference.json          — full reference dict (stats + metrics + run_info)
-      drift/baseline_text_centroid.npy    — text centroid vector (D,) for fast cosine compare
-      drift/baseline_image_centroid.npy   — image centroid vector (D,)
-    """
+def _log_drift_reference(txt_embs, img_embs, metrics, cfg, run_id):
     reference = build_drift_reference(txt_embs, img_embs, metrics, cfg, run_id)
-
-    # 1. JSON reference
     mlflow.log_dict(reference, "drift/drift_reference.json")
-
-    # 2. Centroid .npy files — stored separately so drift_detection.py can do
-    #    a single dot-product without parsing the full JSON
     with tempfile.TemporaryDirectory() as tmp:
         tmp_dir = Path(tmp)
-        txt_centroid = np.array(reference["text_embedding_stats"]["dim_mean"],
-                                dtype=np.float32)
-        img_centroid = np.array(reference["image_embedding_stats"]["dim_mean"],
-                                dtype=np.float32)
+        txt_centroid = np.array(
+            reference["text_embedding_stats"]["dim_mean"], dtype=np.float32)
+        img_centroid = np.array(
+            reference["image_embedding_stats"]["dim_mean"], dtype=np.float32)
         np.save(tmp_dir / "baseline_text_centroid.npy",  txt_centroid)
         np.save(tmp_dir / "baseline_image_centroid.npy", img_centroid)
         mlflow.log_artifacts(str(tmp_dir), artifact_path="drift")
-
-    log.info("Drift reference logged (mode=%s, n_text=%d, n_img=%d)",
-             cfg.mode, len(txt_embs), len(img_embs))
+    log.info("Drift reference logged (mode=%s  week=%s  n_text=%d  n_img=%d)",
+             cfg.mode, cfg.week_label, len(txt_embs), len(img_embs))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# MLFLOW ARTIFACT HELPERS
+# MLFLOW HELPERS
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _set_run_tags(cfg: Config, stage: str):
+    """
+    Set the standard searchable tags on the active MLflow run.
+    Called once at the start of every mode function.
+
+    Tags (searchable in MLflow UI and via MlflowClient.search_runs):
+      pipeline   — always "clip_product_retrieval"
+      mode       — "zero_shot" | "linear_probe" | "finetune"
+      stage      — "initial_train" | "retrain" | "pre_retrain_eval"
+      week_label — e.g. "week2"
+      trained_on — stem of cfg.csv_path, e.g. "week2_replay"
+                   empty string for zero_shot (no training data)
+    """
+    trained_on = Path(cfg.csv_path).stem if cfg.mode != "zero_shot" else ""
+    mlflow.set_tags({
+        "pipeline":   "clip_product_retrieval",
+        "mode":       cfg.mode,
+        "stage":      stage,
+        "week_label": cfg.week_label,
+        "trained_on": trained_on,
+    })
+    log.info(
+        "MLflow tags set — mode=%s  stage=%s  week=%s  trained_on=%s",
+        cfg.mode, stage, cfg.week_label, trained_on or "(none)",
+    )
+
 
 def _log_config(cfg: Config):
     mlflow.log_params({k: str(v) for k, v in asdict(cfg).items()})
@@ -475,10 +466,7 @@ def _log_requirements():
     mlflow.log_text(reqs, "requirements.txt")
 
 
-def _log_embeddings(img_embs: torch.Tensor, txt_embs: torch.Tensor,
-                    label: str = "val"):
-    # Each helper gets its own isolated temp dir so files from other helpers
-    # never bleed into the wrong artifact_path folder.
+def _log_embeddings(img_embs, txt_embs, label: str = "val"):
     with tempfile.TemporaryDirectory() as tmp:
         tmp_dir = Path(tmp)
         np.save(tmp_dir / f"{label}_image_embeddings.npy", img_embs.numpy())
@@ -500,33 +488,36 @@ def _log_eval_metrics_artifact(metrics: dict, label: str = "final"):
 def _log_model_pytorch(model: nn.Module, artifact_path: str,
                        cfg: Config, extra_pip: list = None):
     """
-    Log the model ONCE per run using mlflow.pytorch.log_model.
-    Never call this inside the epoch loop.
+    Log the model using mlflow.pytorch.log_model.
+    pip_requirements uses the ACTUAL installed versions at runtime
+    via importlib.metadata so they never go stale.
     """
+    open_clip_ver = _pkg_version("open-clip-torch")
+    torch_ver     = _pkg_version("torch")
+    pillow_ver    = _pkg_version("Pillow")
+    numpy_ver     = _pkg_version("numpy")
+
     pip_reqs = [
-        "open-clip-torch==2.26.1",
-        "torch>=2.0.0",
-        "Pillow>=10.0.0",
-        "numpy>=1.24.0",
+        f"open-clip-torch=={open_clip_ver}",
+        f"torch=={torch_ver}",
+        f"Pillow=={pillow_ver}",
+        f"numpy=={numpy_ver}",
     ]
     if extra_pip:
         pip_reqs.extend(extra_pip)
+
+    log.info("Logging model with pip_requirements: %s", pip_reqs)
     mlflow.pytorch.log_model(
-        pytorch_model=model,
-        artifact_path=artifact_path,
-        pip_requirements=pip_reqs,
+        pytorch_model  = model,
+        artifact_path  = artifact_path,
+        pip_requirements = pip_reqs,
     )
     log.info("Model logged → %s", artifact_path)
 
 
-def _log_retrieval_failures(img_embs: torch.Tensor, txt_embs: torch.Tensor,
-                             df_val: pd.DataFrame, top_failures: int = 20):
-    """
-    Log the `top_failures` worst image↔text paired cosine-sim cases to
-    artifacts/confusion/retrieval_failures.csv.
-    """
-    sims      = (img_embs * txt_embs).sum(dim=1).numpy()
-    worst_idx = np.argsort(sims)[:top_failures]
+def _log_retrieval_failures(img_embs, txt_embs, df_val, top_failures=20):
+    sims       = (img_embs * txt_embs).sum(dim=1).numpy()
+    worst_idx  = np.argsort(sims)[:top_failures]
     unique_ids = sorted(df_val["original_index"].unique())
     rows = []
     for rank, i in enumerate(worst_idx):
@@ -543,7 +534,8 @@ def _log_retrieval_failures(img_embs: torch.Tensor, txt_embs: torch.Tensor,
             })
     if rows:
         with tempfile.TemporaryDirectory() as tmp:
-            pd.DataFrame(rows).to_csv(Path(tmp) / "retrieval_failures.csv", index=False)
+            pd.DataFrame(rows).to_csv(
+                Path(tmp) / "retrieval_failures.csv", index=False)
             mlflow.log_artifacts(tmp, artifact_path="confusion")
 
 
@@ -586,7 +578,8 @@ def _freeze_clip_except_last_n(model, n_blocks=2):
         model.logit_scale.requires_grad = True
     frozen    = sum(p.numel() for p in model.parameters() if not p.requires_grad)
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    log.info("  Frozen=%d  Trainable=%d  (last %d blocks)", frozen, trainable, n_blocks)
+    log.info("  Frozen=%d  Trainable=%d  (last %d blocks unfrozen)",
+             frozen, trainable, n_blocks)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -609,7 +602,8 @@ def _make_scheduler(optimizer, warmup_steps, total_steps):
 def _train_one_epoch(model, probe_head, loader, optimizer, criterion,
                      scheduler, grad_clip, device, epoch, total_epochs, mode):
     if mode == "linear_probe":
-        model.eval(); probe_head.train()
+        model.eval()
+        probe_head.train()
     else:
         model.train()
 
@@ -619,6 +613,7 @@ def _train_one_epoch(model, probe_head, loader, optimizer, criterion,
             continue
         images = batch["image"].to(device)
         texts  = batch["text"].to(device)
+
         if mode == "linear_probe":
             with torch.no_grad():
                 img_f = model.encode_image(images, normalize=True)
@@ -637,10 +632,11 @@ def _train_one_epoch(model, probe_head, loader, optimizer, criterion,
             nn.utils.clip_grad_norm_(params, grad_clip)
         optimizer.step()
         scheduler.step()
-        total_loss += loss.item(); n_batches += 1
+        total_loss += loss.item()
+        n_batches  += 1
 
     avg = total_loss / max(n_batches, 1)
-    log.info("  Epoch %d/%d  loss=%.4f", epoch, total_epochs, avg)
+    log.info("  Epoch %d/%d  avg_loss=%.4f  batches=%d", epoch, total_epochs, avg, n_batches)
     return avg
 
 
@@ -649,21 +645,51 @@ def _train_one_epoch(model, probe_head, loader, optimizer, criterion,
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _build_loaders(cfg, tokenizer, preprocess):
+    """
+    Build train and val DataLoaders from cfg.csv_path.
+
+    Also logs dataset split stats to the active MLflow run as params:
+      n_train_images, n_val_images, n_train_rows, n_val_rows, trained_on
+
+    These params appear on every run that calls _build_loaders so you can
+    always trace which data a model was trained on.
+    """
     df = pd.read_csv(cfg.csv_path)
     train_df, val_df = split_by_index(df, cfg.val_fraction, cfg.seed)
-    log.info("Train images=%d  Val images=%d",
-             train_df["original_index"].nunique(),
-             val_df["original_index"].nunique())
-    train_ds = CLIPProductDataset(train_df, tokenizer, preprocess,
-                                  cache_dir=cfg.image_cache_dir, mode="train")
-    val_ds   = CLIPProductDataset(val_df,   tokenizer, preprocess,
-                                  cache_dir=cfg.image_cache_dir, mode="eval")
-    train_loader = DataLoader(train_ds, batch_size=cfg.batch_size, shuffle=True,
-                              num_workers=cfg.num_workers,
-                              collate_fn=collate_skip_none, drop_last=True)
-    val_loader   = DataLoader(val_ds, batch_size=cfg.batch_size, shuffle=False,
-                              num_workers=cfg.num_workers,
-                              collate_fn=collate_skip_none)
+
+    n_train_images = train_df["original_index"].nunique()
+    n_val_images   = val_df["original_index"].nunique()
+    log.info(
+        "Dataset split — train: %d rows / %d images   val: %d rows / %d images   "
+        "source: %s",
+        len(train_df), n_train_images,
+        len(val_df),   n_val_images,
+        Path(cfg.csv_path).name,
+    )
+
+    # Log to MLflow so every training run has data provenance as params
+    mlflow.log_params({
+        "n_train_rows":   len(train_df),
+        "n_val_rows":     len(val_df),
+        "n_train_images": n_train_images,
+        "n_val_images":   n_val_images,
+        "trained_on":     Path(cfg.csv_path).stem,
+    })
+
+    train_ds = CLIPProductDataset(
+        train_df, tokenizer, preprocess,
+        cache_dir=cfg.image_cache_dir, mode="train")
+    val_ds = CLIPProductDataset(
+        val_df, tokenizer, preprocess,
+        cache_dir=cfg.image_cache_dir, mode="eval")
+
+    train_loader = DataLoader(
+        train_ds, batch_size=cfg.batch_size, shuffle=True,
+        num_workers=cfg.num_workers, collate_fn=collate_skip_none, drop_last=True)
+    val_loader = DataLoader(
+        val_ds, batch_size=cfg.batch_size, shuffle=False,
+        num_workers=cfg.num_workers, collate_fn=collate_skip_none)
+
     return train_loader, val_loader, train_df, val_df
 
 
@@ -673,38 +699,51 @@ def _build_loaders(cfg, tokenizer, preprocess):
 
 def run_zero_shot(cfg: Config, device: str, run_id: str) -> dict:
     """
-    Drift baseline for zero_shot:
-        Raw CLIP text + image embeddings (no adaptation).
-        That is the space drift_detection.py must encode new data into.
+    Evaluate raw CLIP embeddings with no adaptation.
+    Used as pre-retrain baseline evaluation.
+    No training data involved — trained_on tag is empty string.
     """
-    log.info("═══ ZERO SHOT ═══")
+    log.info("═══ ZERO SHOT  [week=%s] ═══", cfg.week_label)
+
     model, _, preprocess = open_clip.create_model_and_transforms(
         cfg.model_name, pretrained=cfg.pretrained)
     tokenizer = open_clip.get_tokenizer(cfg.model_name)
     model = model.to(device).eval()
 
-    df = pd.read_csv(cfg.csv_path)
-    _, val_df = split_by_index(df, cfg.val_fraction, cfg.seed)
-    val_ds = CLIPProductDataset(val_df, tokenizer, preprocess,
-                                cache_dir=cfg.image_cache_dir, mode="eval")
-    val_loader = DataLoader(val_ds, batch_size=cfg.batch_size, shuffle=False,
-                            num_workers=cfg.num_workers,
-                            collate_fn=collate_skip_none)
-
-    metrics, img_embs, txt_embs = evaluate(model, val_loader, device,
-                                            cfg.eval_ks, label="zero_shot")
+    # Tags — must be called inside an active run (caller opens the run)
+    _set_run_tags(cfg, stage="pre_retrain_eval")
     _log_config(cfg)
     _log_requirements()
+
+    df = pd.read_csv(cfg.csv_path)
+    _, val_df = split_by_index(df, cfg.val_fraction, cfg.seed)
+    log.info("Zero-shot eval corpus — val images: %d", val_df["original_index"].nunique())
+
+    val_ds = CLIPProductDataset(
+        val_df, tokenizer, preprocess,
+        cache_dir=cfg.image_cache_dir, mode="eval")
+    val_loader = DataLoader(
+        val_ds, batch_size=cfg.batch_size, shuffle=False,
+        num_workers=cfg.num_workers, collate_fn=collate_skip_none)
+
+    metrics, img_embs, txt_embs = evaluate(
+        model, val_loader, device, cfg.eval_ks, label="zero_shot")
+
     _log_embeddings(img_embs, txt_embs, label="zero_shot_val")
     _log_eval_metrics_artifact(metrics, label="zero_shot")
     _log_retrieval_failures(img_embs, txt_embs, val_df, cfg.top_failures)
     _log_model_pytorch(model, "model", cfg)
-
-    # Drift reference — raw CLIP space, no probe
     _log_drift_reference(txt_embs, img_embs, metrics, cfg, run_id)
 
     safe = {k.replace("@", "_"): v for k, v in metrics.items()}
     mlflow.log_metrics(safe)
+
+    log.info(
+        "Zero-shot complete [week=%s] — Recall@1=%.4f  Consistency@1=%.4f",
+        cfg.week_label,
+        metrics.get("Recall@1",      0.0),
+        metrics.get("Consistency@1", 0.0),
+    )
     return metrics
 
 
@@ -712,15 +751,23 @@ def run_zero_shot(cfg: Config, device: str, run_id: str) -> dict:
 # MODE 2 — LINEAR PROBE
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run_linear_probe(cfg: Config, device: str, run_id: str) -> dict:
+def run_linear_probe(cfg: Config, device: str, run_id: str,
+                     stage: str = "retrain") -> dict:
     """
-    Drift baseline for linear_probe:
-        Text + image embeddings *after* LinearProbeHead.
-        New data must be encoded through the same frozen CLIP + same probe
-        weights (loaded from this run's checkpoints/probe_best.pt) to compare
-        in the same adapted space.
+    Train a LinearProbeHead on top of frozen CLIP.
+
+    stage parameter controls the MLflow 'stage' tag:
+      "initial_train" — first ever training run (Day-0)
+      "retrain"       — drift-triggered retraining
+
+    trained_on tag = stem of cfg.csv_path, e.g. "week2_replay"
+    This is the key used by the DAG to verify model/data alignment.
     """
-    log.info("═══ LINEAR PROBE ═══")
+    log.info(
+        "═══ LINEAR PROBE  [week=%s  stage=%s  data=%s] ═══",
+        cfg.week_label, stage, Path(cfg.csv_path).name,
+    )
+
     model, _, preprocess = open_clip.create_model_and_transforms(
         cfg.model_name, pretrained=cfg.pretrained)
     tokenizer = open_clip.get_tokenizer(cfg.model_name)
@@ -733,27 +780,34 @@ def run_linear_probe(cfg: Config, device: str, run_id: str) -> dict:
     log.info("  Probe trainable params: %d",
              sum(p.numel() for p in probe.parameters() if p.requires_grad))
 
+    # Tags and config — called inside the active run opened by caller
+    _set_run_tags(cfg, stage=stage)
     _log_config(cfg)
     _log_requirements()
 
+    # _build_loaders also logs n_train_images, n_val_images, trained_on as params
     train_loader, val_loader, train_df, val_df = _build_loaders(
         cfg, tokenizer, preprocess)
-    optimizer    = torch.optim.AdamW(probe.parameters(),
-                                     lr=cfg.lr, weight_decay=cfg.weight_decay)
+
+    optimizer    = torch.optim.AdamW(
+        probe.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
     criterion    = InfoNCELoss(init_temperature=0.07)
     total_steps  = cfg.epochs * len(train_loader)
     warmup_steps = cfg.warmup_epochs * len(train_loader)
     scheduler    = _make_scheduler(optimizer, warmup_steps, total_steps)
 
     ckpt_epochs = exponential_checkpoint_epochs(cfg.epochs)
-    log.info("  Checkpoint epochs: %s", sorted(ckpt_epochs))
+    log.info("  Checkpoint epochs: %s  total_steps=%d  warmup_steps=%d",
+             sorted(ckpt_epochs), total_steps, warmup_steps)
 
     best_recall, best_metrics = 0.0, {}
     img_embs = txt_embs = None
+
     for epoch in range(1, cfg.epochs + 1):
         epoch_loss = _train_one_epoch(
             model, probe, train_loader, optimizer, criterion, scheduler,
             cfg.grad_clip, device, epoch, cfg.epochs, "linear_probe")
+
         metrics, img_embs, txt_embs = evaluate(
             model, val_loader, device, cfg.eval_ks,
             probe_head=probe, label=f"ep{epoch}")
@@ -763,30 +817,44 @@ def run_linear_probe(cfg: Config, device: str, run_id: str) -> dict:
         mlflow.log_metrics(safe, step=epoch)
 
         if epoch in ckpt_epochs:
-            _log_checkpoint({"epoch": epoch, "probe_state": probe.state_dict(),
-                              "metrics": metrics}, f"probe_epoch{epoch}.pt")
+            _log_checkpoint(
+                {"epoch": epoch, "probe_state": probe.state_dict(),
+                 "metrics": metrics},
+                f"probe_epoch{epoch:03d}.pt",
+            )
 
         recall1 = metrics.get("Recall@1", 0.0)
         if recall1 > best_recall:
-            best_recall = recall1
+            best_recall  = recall1
             best_metrics = metrics
-            _log_checkpoint({"epoch": epoch, "probe_state": probe.state_dict(),
-                              "metrics": metrics}, "probe_best.pt")
-            _log_embeddings(img_embs, txt_embs, label=f"best_ep{epoch}")
-            log.info("  ✓ New best Recall@1=%.4f", best_recall)
+            _log_checkpoint(
+                {"epoch": epoch, "probe_state": probe.state_dict(),
+                 "metrics": metrics},
+                "probe_best.pt",
+            )
+            _log_embeddings(img_embs, txt_embs, label=f"best_ep{epoch:03d}")
+            log.info("  ✓ New best Recall@1=%.4f  epoch=%d", best_recall, epoch)
 
     _log_eval_metrics_artifact(best_metrics, label="linear_probe_best")
     _log_retrieval_failures(img_embs, txt_embs, val_df, cfg.top_failures)
 
-    # Drift reference — post-probe space (img_embs / txt_embs are already
-    # the probe-transformed vectors from the best-recall epoch)
+    # Drift reference uses post-probe embeddings from the best epoch
     _log_drift_reference(txt_embs, img_embs, best_metrics, cfg, run_id)
 
-    # Log probe only — CLIP backbone is frozen/unchanged so no need to re-log it
+    # Log probe head only — backbone is frozen and unchanged
     _log_model_pytorch(probe, "model", cfg)
 
-    safe_best = {f"best_{k.replace('@','_')}": v for k, v in best_metrics.items()}
+    safe_best = {f"best_{k.replace('@', '_')}": v for k, v in best_metrics.items()}
     mlflow.log_metrics(safe_best)
+
+    log.info(
+        "Linear probe complete [week=%s  stage=%s] — "
+        "best Recall@1=%.4f  Consistency@1=%.4f  run_id=%s",
+        cfg.week_label, stage,
+        best_metrics.get("Recall@1",      0.0),
+        best_metrics.get("Consistency@1", 0.0),
+        run_id,
+    )
     return best_metrics
 
 
@@ -794,25 +862,30 @@ def run_linear_probe(cfg: Config, device: str, run_id: str) -> dict:
 # MODE 3 — FINETUNE
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run_finetune(cfg: Config, device: str, run_id: str) -> dict:
+def run_finetune(cfg: Config, device: str, run_id: str,
+                 stage: str = "retrain") -> dict:
     """
-    Drift baseline for finetune:
-        Text + image embeddings from the fine-tuned encoder directly.
-        New data must be encoded through the fine-tuned CLIP weights
-        (loaded from this run's checkpoints/finetune_best.pt).
+    Fine-tune the last N transformer blocks of CLIP directly.
+    trained_on tag = stem of cfg.csv_path.
     """
-    log.info("═══ FINETUNE (last %d blocks) ═══", cfg.unfreeze_last_n_blocks)
+    log.info(
+        "═══ FINETUNE  [week=%s  stage=%s  last %d blocks  data=%s] ═══",
+        cfg.week_label, stage, cfg.unfreeze_last_n_blocks, Path(cfg.csv_path).name,
+    )
+
     model, _, preprocess = open_clip.create_model_and_transforms(
         cfg.model_name, pretrained=cfg.pretrained)
     tokenizer = open_clip.get_tokenizer(cfg.model_name)
     model = model.to(device)
     _freeze_clip_except_last_n(model, cfg.unfreeze_last_n_blocks)
 
+    _set_run_tags(cfg, stage=stage)
     _log_config(cfg)
     _log_requirements()
 
     train_loader, val_loader, train_df, val_df = _build_loaders(
         cfg, tokenizer, preprocess)
+
     optimizer = torch.optim.AdamW(
         [p for p in model.parameters() if p.requires_grad],
         lr=cfg.lr, weight_decay=cfg.weight_decay)
@@ -822,14 +895,16 @@ def run_finetune(cfg: Config, device: str, run_id: str) -> dict:
     scheduler    = _make_scheduler(optimizer, warmup_steps, total_steps)
 
     ckpt_epochs = exponential_checkpoint_epochs(cfg.epochs)
-    log.info("  Checkpoint epochs: %s", sorted(ckpt_epochs))
+    log.info("  Checkpoint epochs: %s  total_steps=%d", sorted(ckpt_epochs), total_steps)
 
     best_recall, best_metrics = 0.0, {}
     img_embs = txt_embs = None
+
     for epoch in range(1, cfg.epochs + 1):
         epoch_loss = _train_one_epoch(
             model, None, train_loader, optimizer, criterion, scheduler,
             cfg.grad_clip, device, epoch, cfg.epochs, "finetune")
+
         metrics, img_embs, txt_embs = evaluate(
             model, val_loader, device, cfg.eval_ks, label=f"ep{epoch}")
         metrics["train_loss"] = epoch_loss
@@ -838,43 +913,57 @@ def run_finetune(cfg: Config, device: str, run_id: str) -> dict:
         mlflow.log_metrics(safe, step=epoch)
 
         if epoch in ckpt_epochs:
-            _log_checkpoint({"epoch": epoch, "model_state": model.state_dict(),
-                              "metrics": metrics}, f"finetune_epoch{epoch}.pt")
+            _log_checkpoint(
+                {"epoch": epoch, "model_state": model.state_dict(),
+                 "metrics": metrics},
+                f"finetune_epoch{epoch:03d}.pt",
+            )
 
         recall1 = metrics.get("Recall@1", 0.0)
         if recall1 > best_recall:
-            best_recall = recall1
+            best_recall  = recall1
             best_metrics = metrics
-            _log_checkpoint({"epoch": epoch, "model_state": model.state_dict(),
-                              "metrics": metrics}, "finetune_best.pt")
-            _log_embeddings(img_embs, txt_embs, label=f"best_ep{epoch}")
-            log.info("  ✓ New best Recall@1=%.4f", best_recall)
+            _log_checkpoint(
+                {"epoch": epoch, "model_state": model.state_dict(),
+                 "metrics": metrics},
+                "finetune_best.pt",
+            )
+            _log_embeddings(img_embs, txt_embs, label=f"best_ep{epoch:03d}")
+            log.info("  ✓ New best Recall@1=%.4f  epoch=%d", best_recall, epoch)
 
     _log_eval_metrics_artifact(best_metrics, label="finetune_best")
     if img_embs is not None:
         _log_retrieval_failures(img_embs, txt_embs, val_df, cfg.top_failures)
-
-    # Drift reference — fine-tuned encoder space
-    if img_embs is not None:
         _log_drift_reference(txt_embs, img_embs, best_metrics, cfg, run_id)
 
     _log_model_pytorch(model, "model", cfg)
 
-    safe_best = {f"best_{k.replace('@','_')}": v for k, v in best_metrics.items()}
+    safe_best = {f"best_{k.replace('@', '_')}": v for k, v in best_metrics.items()}
     mlflow.log_metrics(safe_best)
+
+    log.info(
+        "Finetune complete [week=%s  stage=%s] — "
+        "best Recall@1=%.4f  Consistency@1=%.4f  run_id=%s",
+        cfg.week_label, stage,
+        best_metrics.get("Recall@1",      0.0),
+        best_metrics.get("Consistency@1", 0.0),
+        run_id,
+    )
     return best_metrics
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CHECKPOINT LOADERS  (used by drift_detection.py)
+# CHECKPOINT LOADERS  (used by DAG and drift_detection.py)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def load_zero_shot_model(cfg: Config, device: str):
-    """Return a plain CLIP model (no adaptation). Used by drift_detection."""
+    """Return a plain CLIP model (no adaptation)."""
     model, _, preprocess = open_clip.create_model_and_transforms(
         cfg.model_name, pretrained=cfg.pretrained)
     model = model.to(device).eval()
     tokenizer = open_clip.get_tokenizer(cfg.model_name)
+    log.info("Loaded zero-shot CLIP  model=%s  pretrained=%s",
+             cfg.model_name, cfg.pretrained)
     return model, preprocess, tokenizer
 
 
@@ -882,6 +971,9 @@ def load_linear_probe_from_mlflow(run_id: str, cfg: Config, device: str):
     """
     Reconstruct frozen CLIP + trained LinearProbeHead from an MLflow run.
     Returns (model, probe, preprocess, tokenizer).
+
+    The DAG calls _verify_run_mode() before calling this to ensure
+    the run is actually a linear_probe run.
     """
     local_path = mlflow.artifacts.download_artifacts(
         run_id=run_id, artifact_path="checkpoints/probe_best.pt")
@@ -890,13 +982,21 @@ def load_linear_probe_from_mlflow(run_id: str, cfg: Config, device: str):
     model = model.to(device).eval()
     for p in model.parameters():
         p.requires_grad = False
+
     probe = LinearProbeHead(cfg.embed_dim, cfg.probe_hidden,
                             cfg.probe_dropout).to(device)
     ckpt = torch.load(local_path, map_location=device)
     probe.load_state_dict(ckpt["probe_state"])
     probe.eval()
+
     tokenizer = open_clip.get_tokenizer(cfg.model_name)
-    log.info("Loaded probe from run %s epoch %s", run_id, ckpt.get("epoch"))
+    log.info(
+        "Loaded linear-probe from MLflow — run_id=%s  epoch=%s  "
+        "Recall@1=%.4f",
+        run_id,
+        ckpt.get("epoch", "?"),
+        ckpt.get("metrics", {}).get("Recall@1", 0.0),
+    )
     return model, probe, preprocess, tokenizer
 
 
@@ -913,12 +1013,46 @@ def load_finetune_from_mlflow(run_id: str, cfg: Config, device: str):
     ckpt = torch.load(local_path, map_location=device)
     model.load_state_dict(ckpt["model_state"])
     tokenizer = open_clip.get_tokenizer(cfg.model_name)
-    log.info("Loaded finetune from run %s epoch %s", run_id, ckpt.get("epoch"))
+    log.info(
+        "Loaded finetune from MLflow — run_id=%s  epoch=%s  Recall@1=%.4f",
+        run_id,
+        ckpt.get("epoch", "?"),
+        ckpt.get("metrics", {}).get("Recall@1", 0.0),
+    )
     return model, preprocess, tokenizer
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# MAIN
+# RUN VERIFICATION HELPER  (used by DAG before loading a model)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def get_run_tags(run_id: str, tracking_uri: str) -> dict:
+    """
+    Fetch the tags dict for a given MLflow run_id.
+    Returns {} if the run doesn't exist or tags can't be fetched.
+
+    Tags the DAG cares about:
+      mode        — "linear_probe" | "zero_shot" | "finetune"
+      trained_on  — e.g. "week2_replay"
+      week_label  — e.g. "week2"
+      stage       — "initial_train" | "retrain" | "pre_retrain_eval"
+
+    Usage in DAG:
+        tags = get_run_tags(run_id, tracking_uri)
+        if tags.get("mode") != "linear_probe":
+            # fall back to zero-shot
+    """
+    try:
+        client = mlflow.MlflowClient(tracking_uri=tracking_uri)
+        run    = client.get_run(run_id)
+        return dict(run.data.tags)
+    except Exception as e:
+        log.warning("Could not fetch tags for run_id=%s: %s", run_id, e)
+        return {}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MAIN  (CLI entry point)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def parse_args():
@@ -938,9 +1072,10 @@ def parse_args():
     p.add_argument("--experiment",      default="clip_product_retrieval")
     p.add_argument("--run_name",        default=None)
     p.add_argument("--week_label",      default="week1")
-    p.add_argument("--category_label",  default="mens_wear")
-    p.add_argument("--top_failures",    type=int,   default=20,
-                   help="Number of worst retrieval pairs to log in confusion/")
+    p.add_argument("--category_label",  default="all")
+    p.add_argument("--stage",           default="retrain",
+                   choices=["initial_train", "retrain", "pre_retrain_eval"])
+    p.add_argument("--top_failures",    type=int,   default=20)
     return p.parse_args()
 
 
@@ -978,12 +1113,11 @@ def main():
     mlflow.set_tracking_uri(cfg.mlflow_tracking_uri)
     mlflow.set_experiment(cfg.mlflow_experiment)
 
-    run_name = (cfg.mlflow_run_name
-                or f"{cfg.mode}_{cfg.week_label}_{cfg.category_label}")
+    run_name = cfg.mlflow_run_name or f"{cfg.mode}_{cfg.week_label}"
 
     with mlflow.start_run(run_name=run_name) as run:
         run_id = run.info.run_id
-        log.info("MLflow run_id: %s", run_id)
+        log.info("MLflow run started — run_id=%s  name=%s", run_id, run_name)
 
         try:
             commit = subprocess.check_output(
@@ -991,21 +1125,21 @@ def main():
             mlflow.set_tag("git_commit", commit)
         except Exception:
             pass
-        mlflow.set_tag("week",     cfg.week_label)
-        mlflow.set_tag("category", cfg.category_label)
-        mlflow.set_tag("mode",     cfg.mode)
 
         t0 = time.time()
         if cfg.mode == "zero_shot":
             final = run_zero_shot(cfg, device, run_id)
         elif cfg.mode == "linear_probe":
-            final = run_linear_probe(cfg, device, run_id)
+            final = run_linear_probe(cfg, device, run_id, stage=args.stage)
         elif cfg.mode == "finetune":
-            final = run_finetune(cfg, device, run_id)
+            final = run_finetune(cfg, device, run_id, stage=args.stage)
 
-        mlflow.log_metric("elapsed_seconds", time.time() - t0)
-        log.info("Run ID: %s", run_id)
-        log.info("Final metrics: %s", final)
+        elapsed = time.time() - t0
+        mlflow.log_metric("elapsed_seconds", elapsed)
+        log.info(
+            "Run complete — run_id=%s  elapsed=%.1fs  final_metrics=%s",
+            run_id, elapsed, final,
+        )
 
 
 if __name__ == "__main__":
