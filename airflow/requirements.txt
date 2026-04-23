@@ -1,0 +1,17 @@
+# ML core — CPU only
+torch==2.7.0+cpu
+open_clip_torch==2.32.0
+faiss-cpu==1.10.0
+
+# Experiment tracking
+mlflow==3.10.0
+
+# Data
+pandas
+numpy
+
+# DVC — local only
+dvc==3.59.0
+
+# Airflow provider (standard operators your DAG uses)
+apache-airflow-providers-standard

@@ -1,0 +1,118 @@
+version: "3.8"
+
+x-airflow-common: &airflow-common
+  image: airflow-clip
+  environment:
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow123@postgres/airflow
+    AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__FERNET_KEY: ""
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: "http://airflow-webserver:8080/execution/"
+    AIRFLOW__API__SECRET_KEY: "your-api-secret-key-at-least-64-characters-long-for-sha512-hmac-ok"
+    AIRFLOW__API_AUTH__JWT_SECRET: "your-jwt-secret-must-be-at-least-64-characters-long-for-sha512-hmac"
+    AIRFLOW__API_AUTH__JWT_ISSUER: "airflow"
+    MLFLOW_TRACKING_URI: http://mlflow:5000
+    MLFLOW_EXPERIMENT: clip_product_retrieval
+    DATA_DIR: /opt/airflow/data
+    SRC_DIR: /opt/airflow/src
+    PYTHONPATH: /opt/airflow/src
+
+
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./src:/opt/airflow/src
+    - ./data:/opt/airflow/data
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+
+services:
+
+  postgres:
+    image: postgres:15
+    container_name: postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres123
+      POSTGRES_MULTIPLE_DATABASES: airflow,mlflow
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/create-multiple-dbs.sh:/docker-entrypoint-initdb.d/create-multiple-dbs.sh
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mlflow:
+    build:
+      context: ./mlflow
+    command: mlflow server --host 0.0.0.0 --port 5000 --allowed-hosts '*'
+    container_name: mlflow
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      MLFLOW_DB_USER: mlflow
+      MLFLOW_DB_PASSWORD: mlflow123
+      MLFLOW_DB_HOST: postgres
+      MLFLOW_DB_NAME: mlflow
+      MLFLOW_ALLOWED_HOSTS: '*'
+
+    volumes:
+      - mlflow_artifacts:/mlflow/artifacts
+    ports:
+      - "5000:5000"
+
+  airflow-init:
+    <<: *airflow-common
+    container_name: airflow_init
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        airflow db migrate &&
+        airflow users create \
+          --username admin \
+          --password admin \
+          --firstname Admin \
+          --lastname User \
+          --role Admin \
+          --email admin@example.com
+    restart: "no"
+
+
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: airflow_webserver
+    command: api-server
+    hostname: airflow-webserver
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/monitor/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    ports:
+      - "8080:8080"
+    restart: always
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: airflow_scheduler
+    command: scheduler
+    hostname: airflow-scheduler
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+      airflow-webserver:
+        condition: service_healthy    # ← wait for API server before starting
+    restart: always
+
+volumes:
+  postgres_data:
+  mlflow_artifacts:
