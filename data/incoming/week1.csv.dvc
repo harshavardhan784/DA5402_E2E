@@ -1,0 +1,5 @@
+outs:
+- md5: c147c30edb7ef534d144308b4a141bbb
+  size: 705035
+  hash: md5
+  path: week1.csv

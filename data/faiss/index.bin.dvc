@@ -1,0 +1,5 @@
+outs:
+- md5: 8da111cc549842d258b6ab59d904768c
+  size: 1562669
+  hash: md5
+  path: index.bin

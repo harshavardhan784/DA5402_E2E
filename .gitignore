@@ -1,2 +1,6 @@
-__pycache__
-data/image_cache
+__pycache__/
+
+data/*
+!data/
+!data/**/
+!data/**/*.dvc
