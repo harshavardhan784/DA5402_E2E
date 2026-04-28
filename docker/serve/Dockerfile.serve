@@ -1,0 +1,39 @@
+FROM python:3.11-slim
+
+# System deps
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl \
+        libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/project
+
+# Copy requirements early (for caching)
+COPY docker/serve/requirements.serve.txt /tmp/requirements.serve.txt
+
+# Install everything in ONE layer (important)
+RUN pip install \
+    --timeout 1000 \
+    --retries 10 \
+    --trusted-host pypi.org \
+    --trusted-host files.pythonhosted.org \
+    torch==2.7.0+cpu \
+    torchvision==0.22.0+cpu \
+    --extra-index-url https://download.pytorch.org/whl/cpu \
+    && pip install \
+    --timeout 1000 \
+    --retries 10 \
+    open-clip-torch==2.32.0 \
+    && pip install \
+    --timeout 1000 \
+    --retries 10 \
+    -r /tmp/requirements.serve.txt \
+    && pip install prometheus-fastapi-instrumentator
+
+# Copy source AFTER installs (for caching)
+COPY src/ /opt/project/src/
+
+ENV PYTHONPATH=/opt/project:/opt/project/src
+ENV DATA_DIR=/opt/project/data
+
+EXPOSE 5001 8000

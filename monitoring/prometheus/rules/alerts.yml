@@ -1,0 +1,61 @@
+groups:
+
+  - name: search_api
+    rules:
+
+      - alert: SearchApiDown
+        expr: up{job="search_api"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Search API is down"
+          description: "search_api has been unreachable for more than 1 minute."
+
+      - alert: SearchApiHighLatency
+        expr: |
+          histogram_quantile(0.95,
+            rate(http_request_duration_seconds_bucket{job="search_api"}[5m])
+          ) > 2.0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Search API p95 latency > 2s"
+          description: "95th percentile latency is {{ $value }}s"
+
+      - alert: SearchApiHighErrorRate
+        expr: |
+          rate(http_requests_total{job="search_api", status=~"5.."}[5m])
+          /
+          rate(http_requests_total{job="search_api"}[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Search API error rate > 5%"
+          description: "More than 5% of requests are returning 5xx errors."
+
+  - name: postgres
+    rules:
+
+      - alert: PostgresDown
+        expr: up{job="postgres"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Postgres is down"
+          description: "The postgres_exporter target has been unreachable for more than 1 minute."
+
+  - name: system
+    rules:
+
+      - alert: PrometheusDown
+        expr: up{job="prometheus"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Prometheus itself is unreachable"
+          description: "Prometheus cannot scrape itself — something is seriously wrong."

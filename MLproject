@@ -1,0 +1,37 @@
+name: clip_product_retrieval
+
+python_env: python_env.yaml
+
+entry_points:
+  augment:
+    parameters:
+      input:  {type: string}
+      output: {type: string}
+    command: "python src/augment_texts.py --input {input} --output {output}"
+
+  train:
+    parameters:
+      csv_path:   {type: string, default: "data/processed/week1_replay.csv"}
+      mode:       {type: string, default: "linear_probe"}
+      epochs:     {type: float,  default: 10}
+      batch_size: {type: float,  default: 32}
+      tracking_uri: {type: string, default: "http://localhost:5000"}
+    command: >
+      python src/clip_experiments.py
+        --csv_path {csv_path}
+        --mode {mode}
+        --epochs {epochs}how do i view md view in vs code
+        --batch_size {batch_size}
+        --mlflow_tracking_uri {tracking_uri}
+
+  register:
+    parameters:
+      run_id: {type: string}
+      mode:   {type: string, default: "linear_probe"}
+    command: >
+      python src/register_clip_model.py
+        --run_id {run_id}
+        --mode {mode}
+        --faiss_index_img data/faiss/index_img.bin
+        --faiss_index_txt data/faiss/index_txt.bin
+        --faiss_meta data/faiss/meta.json

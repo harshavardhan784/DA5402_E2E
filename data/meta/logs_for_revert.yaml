@@ -1,0 +1,6 @@
+week1:
+  dvc_lock_md5: no-lock-file
+  git_commit: 116abfe2d45abb66fa8e97ecb76839dd13cd9111
+  mlflow_run_id: 5a154431e37a46568de5ce41485f0494
+  params_snapshot: {}
+  stage: initial_train

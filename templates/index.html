@@ -1,0 +1,1808 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CLIP Retrieval — MLOps Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600&family=Syne:wght@400;600;700;800&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg:       #0a0b0d;
+    --bg2:      #0f1117;
+    --bg3:      #161921;
+    --border:   #1e2330;
+    --border2:  #252b3a;
+    --accent:   #00d4aa;
+    --accent2:  #0099ff;
+    --accent3:  #ff6b35;
+    --warn:     #f5c518;
+    --red:      #ff4466;
+    --text:     #e8eaf0;
+    --text2:    #8a91a8;
+    --text3:    #4a5068;
+    --mono:     'JetBrains Mono', monospace;
+    --sans:     'Instrument Sans', sans-serif;
+    --display:  'Syne', sans-serif;
+    --r:        6px;
+    --r2:       10px;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 14px;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* ── LAYOUT ── */
+  .shell {
+    display: grid;
+    grid-template-columns: 220px 1fr;
+    grid-template-rows: 52px 1fr;
+    min-height: 100vh;
+  }
+
+  /* ── TOPBAR ── */
+  .topbar {
+    grid-column: 1 / -1;
+    background: var(--bg2);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 20px;
+    gap: 16px;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+  .topbar-logo {
+    font-family: var(--display);
+    font-size: 16px;
+    font-weight: 800;
+    color: var(--accent);
+    letter-spacing: -0.3px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .topbar-logo .dot { width: 7px; height: 7px; background: var(--accent); border-radius: 50%; animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+  .topbar-sep { flex: 1; }
+  .status-pill {
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 3px 10px;
+    border-radius: 20px;
+    border: 1px solid;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .status-pill.ok    { color: var(--accent); border-color: var(--accent); background: #00d4aa12; }
+  .status-pill.err   { color: var(--red);    border-color: var(--red);    background: #ff446612; }
+  .status-pill.warn  { color: var(--warn);   border-color: var(--warn);   background: #f5c51812; }
+  .status-pill .led  { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  .status-pill.ok  .led { animation: pulse 2s infinite; }
+
+  /* ── SIDEBAR ── */
+  .sidebar {
+    background: var(--bg2);
+    border-right: 1px solid var(--border);
+    padding: 16px 0;
+    overflow-y: auto;
+  }
+  .nav-section { padding: 8px 16px 4px; font-size: 10px; font-weight: 600; letter-spacing: 1.5px; color: var(--text3); text-transform: uppercase; }
+  .nav-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 9px 16px;
+    cursor: pointer;
+    font-size: 13px;
+    color: var(--text2);
+    border-left: 2px solid transparent;
+    transition: all .15s;
+    user-select: none;
+  }
+  .nav-item:hover { color: var(--text); background: var(--bg3); }
+  .nav-item.active { color: var(--accent); border-left-color: var(--accent); background: #00d4aa08; }
+  .nav-item .icon { font-size: 15px; width: 18px; text-align: center; }
+
+  /* ── MAIN ── */
+  .main {
+    overflow-y: auto;
+    padding: 24px 28px;
+    background: var(--bg);
+  }
+
+  .page { display: none; }
+  .page.active { display: block; }
+
+  .page-title {
+    font-family: var(--display);
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--text);
+    margin-bottom: 4px;
+  }
+  .page-sub { color: var(--text2); font-size: 13px; margin-bottom: 24px; }
+
+  /* ── CARDS ── */
+  .card {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: var(--r2);
+    padding: 18px 20px;
+    margin-bottom: 16px;
+  }
+  .card-title {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: var(--text3);
+    margin-bottom: 12px;
+  }
+
+  /* ── GRID ── */
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+  .grid4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+
+  /* ── STAT BOX ── */
+  .stat-box {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: var(--r2);
+    padding: 16px;
+  }
+  .stat-label { font-size: 11px; color: var(--text3); margin-bottom: 6px; font-family: var(--mono); letter-spacing: .5px; }
+  .stat-value { font-family: var(--display); font-size: 28px; font-weight: 800; color: var(--text); line-height: 1; }
+  .stat-unit  { font-size: 13px; color: var(--text2); margin-left: 3px; }
+  .stat-delta { font-size: 11px; margin-top: 5px; font-family: var(--mono); }
+  .stat-delta.up  { color: var(--accent); }
+  .stat-delta.dn  { color: var(--red); }
+  .stat-delta.neu { color: var(--text3); }
+
+  /* ── PIPELINE VIZ ── */
+  .pipeline-track {
+    position: relative;
+    padding: 0 12px;
+    margin-bottom: 20px;
+  }
+  .pipeline-nodes {
+    display: flex;
+    gap: 0;
+    overflow-x: auto;
+    padding-bottom: 8px;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border2) transparent;
+  }
+  .pipeline-node {
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 110px;
+    position: relative;
+  }
+  .pipeline-node::after {
+    content: '';
+    position: absolute;
+    top: 18px;
+    left: 50%;
+    width: 100%;
+    height: 2px;
+    background: var(--border2);
+    z-index: 0;
+  }
+  .pipeline-node:last-child::after { display: none; }
+  .pipeline-dot {
+    width: 36px; height: 36px;
+    border-radius: 50%;
+    border: 2px solid var(--border2);
+    background: var(--bg3);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    position: relative;
+    z-index: 1;
+    transition: all .2s;
+    cursor: pointer;
+  }
+  .pipeline-dot.done   { border-color: var(--accent); background: #00d4aa15; }
+  .pipeline-dot.run    { border-color: var(--accent2); background: #0099ff15; animation: glow 1.5s infinite; }
+  .pipeline-dot.skip   { border-color: var(--warn); background: #f5c51815; }
+  .pipeline-dot.fail   { border-color: var(--red); background: #ff446615; }
+  .pipeline-dot.idle   { border-color: var(--border2); }
+  @keyframes glow { 0%,100%{box-shadow:0 0 0 0 #0099ff40} 50%{box-shadow:0 0 0 6px #0099ff00} }
+  .pipeline-label {
+    font-family: var(--mono);
+    font-size: 9.5px;
+    color: var(--text2);
+    text-align: center;
+    margin-top: 6px;
+    line-height: 1.3;
+    max-width: 90px;
+  }
+  .pipeline-badge {
+    position: absolute;
+    top: -6px; right: -6px;
+    width: 14px; height: 14px;
+    border-radius: 50%;
+    font-size: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg2);
+    border: 1px solid currentColor;
+  }
+
+  /* ── TERMINAL ── */
+  .terminal {
+    background: #080a0e;
+    border: 1px solid var(--border2);
+    border-radius: var(--r2);
+    overflow: hidden;
+    font-family: var(--mono);
+    font-size: 12.5px;
+  }
+  .terminal-bar {
+    background: var(--bg3);
+    border-bottom: 1px solid var(--border);
+    padding: 8px 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .t-dot { width: 10px; height: 10px; border-radius: 50%; }
+  .t-dot.r { background: #ff5f57; }
+  .t-dot.y { background: #ffbd2e; }
+  .t-dot.g { background: #28ca41; }
+  .terminal-title { font-size: 11px; color: var(--text3); flex: 1; text-align: center; }
+  .terminal-body {
+    padding: 14px 16px;
+    min-height: 160px;
+    max-height: 340px;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border2) transparent;
+  }
+  .terminal-line {
+    line-height: 1.7;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+  .t-prompt { color: var(--accent); }
+  .t-cmd { color: var(--text); }
+  .t-out  { color: var(--text2); }
+  .t-ok   { color: var(--accent); }
+  .t-err  { color: var(--red); }
+  .t-warn { color: var(--warn); }
+  .t-info { color: var(--accent2); }
+  .t-dim  { color: var(--text3); }
+  .t-cursor { display: inline-block; width: 7px; height: 13px; background: var(--accent); animation: blink .8s infinite; vertical-align: middle; margin-left: 2px; }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+
+  .terminal-input-row {
+    border-top: 1px solid var(--border);
+    padding: 10px 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .t-prompt-label { color: var(--accent); flex-shrink: 0; }
+  .terminal-input {
+    flex: 1;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 12.5px;
+    caret-color: var(--accent);
+  }
+  .t-run-btn {
+    background: #00d4aa22;
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 4px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all .15s;
+  }
+  .t-run-btn:hover { background: var(--accent); color: #000; }
+
+  /* CMD REFERENCE TABLE */
+  .cmd-ref {
+    margin-top: 12px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+  .cmd-item {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: var(--r);
+    padding: 9px 12px;
+    cursor: pointer;
+    transition: all .15s;
+  }
+  .cmd-item:hover { border-color: var(--accent); background: #00d4aa08; }
+  .cmd-item .cmd-code { font-family: var(--mono); font-size: 11px; color: var(--accent); margin-bottom: 3px; }
+  .cmd-item .cmd-desc { font-size: 11px; color: var(--text2); }
+
+  /* ── SEARCH ── */
+  .search-box {
+    background: var(--bg2);
+    border: 1px solid var(--border2);
+    border-radius: var(--r2);
+    padding: 18px 20px;
+    margin-bottom: 16px;
+  }
+  .search-tabs {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 16px;
+    background: var(--bg3);
+    border-radius: var(--r);
+    padding: 4px;
+    width: fit-content;
+  }
+  .stab {
+    padding: 7px 16px;
+    border-radius: 4px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text2);
+    cursor: pointer;
+    transition: all .15s;
+  }
+  .stab.active { background: var(--accent); color: #000; font-weight: 600; }
+
+  .search-row {
+    display: flex;
+    gap: 10px;
+    align-items: flex-end;
+  }
+  .search-field { flex: 1; }
+  .field-label { font-size: 11px; color: var(--text3); margin-bottom: 5px; font-family: var(--mono); }
+  .field-input {
+    width: 100%;
+    background: var(--bg3);
+    border: 1px solid var(--border2);
+    border-radius: var(--r);
+    padding: 10px 14px;
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 13px;
+    outline: none;
+    transition: border-color .15s;
+  }
+  .field-input:focus { border-color: var(--accent); }
+  .field-input::placeholder { color: var(--text3); }
+
+  .search-btn {
+    background: var(--accent);
+    color: #000;
+    border: none;
+    border-radius: var(--r);
+    padding: 10px 24px;
+    font-family: var(--display);
+    font-size: 14px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all .15s;
+    flex-shrink: 0;
+    height: 42px;
+  }
+  .search-btn:hover { background: #00f5c4; transform: translateY(-1px); }
+  .search-btn:disabled { opacity: .5; cursor: not-allowed; transform: none; }
+
+  /* RESULTS */
+  .results-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 12px;
+    margin-top: 16px;
+  }
+  .result-card {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: var(--r2);
+    overflow: hidden;
+    transition: all .2s;
+    cursor: pointer;
+  }
+  .result-card:hover { border-color: var(--accent); transform: translateY(-2px); box-shadow: 0 8px 24px #00d4aa18; }
+  .result-img {
+    width: 100%;
+    aspect-ratio: 1;
+    object-fit: cover;
+    background: var(--bg3);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 32px;
+    color: var(--text3);
+  }
+  .result-img img { width: 100%; height: 100%; object-fit: cover; }
+  .result-body { padding: 10px 12px; }
+  .result-title { font-size: 12px; color: var(--text); line-height: 1.4; margin-bottom: 6px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .result-cat { font-family: var(--mono); font-size: 10px; color: var(--text3); margin-bottom: 4px; }
+  .result-score {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 10px;
+    padding: 2px 7px;
+    border-radius: 3px;
+    background: #00d4aa18;
+    color: var(--accent);
+    border: 1px solid #00d4aa30;
+  }
+  .results-section-title {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text3);
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    margin: 16px 0 8px;
+    padding-left: 2px;
+    border-left: 2px solid var(--accent2);
+    padding-left: 8px;
+  }
+
+  /* ── DRIFT ── */
+  .drift-meter {
+    margin: 8px 0;
+  }
+  .drift-track {
+    height: 8px;
+    background: var(--bg3);
+    border-radius: 4px;
+    overflow: hidden;
+    position: relative;
+  }
+  .drift-fill {
+    height: 100%;
+    border-radius: 4px;
+    transition: width .6s ease;
+    position: relative;
+  }
+  .drift-fill::after {
+    content: '';
+    position: absolute;
+    right: 0; top: 0; bottom: 0;
+    width: 4px;
+    background: rgba(255,255,255,.5);
+    border-radius: 2px;
+  }
+  .drift-threshold {
+    position: absolute;
+    top: -3px;
+    bottom: -3px;
+    width: 2px;
+    background: var(--warn);
+    left: 30%;
+  }
+  .drift-labels {
+    display: flex;
+    justify-content: space-between;
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--text3);
+    margin-top: 4px;
+  }
+
+  /* ── LOG TABLE ── */
+  .log-table { width: 100%; border-collapse: collapse; }
+  .log-table th {
+    text-align: left;
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: .8px;
+    text-transform: uppercase;
+    color: var(--text3);
+    border-bottom: 1px solid var(--border);
+    padding: 6px 10px;
+  }
+  .log-table td {
+    padding: 9px 10px;
+    border-bottom: 1px solid var(--border);
+    font-size: 12.5px;
+    vertical-align: middle;
+  }
+  .log-table tr:last-child td { border-bottom: none; }
+  .log-table tr:hover td { background: var(--bg3); }
+  .badge {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 3px;
+    border: 1px solid;
+  }
+  .badge.success { color: var(--accent); border-color: #00d4aa40; background: #00d4aa0c; }
+  .badge.fail    { color: var(--red);    border-color: #ff446640; background: #ff44660c; }
+  .badge.skip    { color: var(--warn);   border-color: #f5c51840; background: #f5c5180c; }
+  .badge.run     { color: var(--accent2);border-color: #0099ff40; background: #0099ff0c; }
+
+  /* ── BUTTONS ── */
+  .btn {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 8px 16px;
+    border-radius: var(--r);
+    font-family: var(--mono);
+    font-size: 12px;
+    cursor: pointer;
+    transition: all .15s;
+    border: 1px solid;
+  }
+  .btn-primary { background: var(--accent); border-color: var(--accent); color: #000; font-weight: 600; }
+  .btn-primary:hover { background: #00f5c4; }
+  .btn-ghost { background: transparent; border-color: var(--border2); color: var(--text2); }
+  .btn-ghost:hover { border-color: var(--text2); color: var(--text); }
+  .btn-danger { background: transparent; border-color: #ff446640; color: var(--red); }
+  .btn-danger:hover { background: #ff446618; }
+
+  /* ── MISC ── */
+  .spinner {
+    width: 16px; height: 16px;
+    border: 2px solid var(--border2);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin .7s linear infinite;
+    display: inline-block;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .empty-state {
+    text-align: center;
+    padding: 48px 20px;
+    color: var(--text3);
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+  .empty-icon { font-size: 40px; margin-bottom: 12px; opacity: .5; }
+
+  .tag {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 10px;
+    padding: 2px 7px;
+    border-radius: 3px;
+    background: var(--bg3);
+    border: 1px solid var(--border2);
+    color: var(--text2);
+    margin-right: 4px;
+  }
+
+  hr.divider { border: none; border-top: 1px solid var(--border); margin: 18px 0; }
+
+  .topk-select {
+    background: var(--bg3);
+    border: 1px solid var(--border2);
+    border-radius: var(--r);
+    padding: 8px 10px;
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 12px;
+    outline: none;
+    height: 42px;
+  }
+
+  .mode-badge {
+    font-family: var(--mono);
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 3px;
+    color: var(--accent2);
+    background: #0099ff12;
+    border: 1px solid #0099ff30;
+  }
+
+  .upload-zone {
+    border: 2px dashed var(--border2);
+    border-radius: var(--r);
+    padding: 20px;
+    text-align: center;
+    cursor: pointer;
+    transition: all .15s;
+    color: var(--text3);
+    font-size: 12px;
+  }
+  .upload-zone:hover { border-color: var(--accent); color: var(--text2); }
+  .upload-zone.has-file { border-color: var(--accent); background: #00d4aa08; color: var(--accent); }
+  .upload-zone input { display: none; }
+
+  /* ── MANUAL ── */
+  .manual-section { margin-bottom: 28px; }
+  .manual-h2 {
+    font-family: var(--display);
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--accent);
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .manual-p { color: var(--text2); line-height: 1.7; font-size: 13px; margin-bottom: 8px; }
+  .manual-code {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: var(--r);
+    padding: 12px 14px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text);
+    margin: 8px 0;
+    line-height: 1.6;
+  }
+  .manual-step {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 10px;
+    align-items: flex-start;
+  }
+  .step-num {
+    flex-shrink: 0;
+    width: 24px; height: 24px;
+    background: var(--accent);
+    color: #000;
+    border-radius: 50%;
+    font-family: var(--display);
+    font-size: 12px;
+    font-weight: 800;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-top: 1px;
+  }
+  .step-body { flex: 1; color: var(--text2); font-size: 13px; line-height: 1.6; }
+  .step-body strong { color: var(--text); }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
+
+  @media(max-width:768px){
+    .shell { grid-template-columns: 1fr; }
+    .sidebar { display: none; }
+    .grid2, .grid3, .grid4 { grid-template-columns: 1fr; }
+    .cmd-ref { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<div class="shell">
+  <!-- TOPBAR -->
+  <header class="topbar">
+    <div class="topbar-logo">
+      <div class="dot"></div>
+      CLIP Retrieval
+    </div>
+    <span class="tag">ViT-B/32</span>
+    <span class="tag">MLOps</span>
+    <div class="topbar-sep"></div>
+    <div class="status-pill ok" id="api-status">
+      <div class="led"></div>
+      <span id="api-status-text">Checking…</span>
+    </div>
+  </header>
+
+  <!-- SIDEBAR -->
+  <nav class="sidebar">
+    <div class="nav-section">Overview</div>
+    <div class="nav-item active" onclick="navigate('dashboard')">
+      <span class="icon">⬡</span> Dashboard
+    </div>
+    <div class="nav-section">Search</div>
+    <div class="nav-item" onclick="navigate('search')">
+      <span class="icon">⌕</span> Product Search
+    </div>
+    <div class="nav-section">Pipeline</div>
+    <div class="nav-item" onclick="navigate('pipeline')">
+      <span class="icon">◈</span> Pipeline Viz
+    </div>
+    <div class="nav-item" onclick="navigate('terminal')">
+      <span class="icon">⌨</span> Terminal
+    </div>
+    <div class="nav-section">Monitoring</div>
+    <div class="nav-item" onclick="navigate('monitoring')">
+      <span class="icon">◎</span> Live Metrics
+    </div>
+    <div class="nav-item" onclick="navigate('drift')">
+      <span class="icon">△</span> Drift Watch
+    </div>
+    <div class="nav-section">Docs</div>
+    <div class="nav-item" onclick="navigate('manual')">
+      <span class="icon">☰</span> User Manual
+    </div>
+  </nav>
+
+  <!-- MAIN -->
+  <main class="main">
+
+    <!-- ═══════════════════════ DASHBOARD ═══════════════════════ -->
+    <div class="page active" id="page-dashboard">
+      <div class="page-title">System Overview</div>
+      <div class="page-sub">Live state of the CLIP product retrieval pipeline</div>
+
+      <div class="grid4" style="margin-bottom:16px">
+        <div class="stat-box">
+          <div class="stat-label">Indexed Products</div>
+          <div class="stat-value" id="stat-vectors">—<span class="stat-unit"></span></div>
+          <div class="stat-delta neu" id="stat-vectors-sub">loading…</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-label">Embed Dim</div>
+          <div class="stat-value">512<span class="stat-unit">d</span></div>
+          <div class="stat-delta neu">ViT-B/32 CLIP</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-label">MLflow</div>
+          <div class="stat-value" id="stat-mlflow">—</div>
+          <div class="stat-delta neu" id="stat-mlflow-sub">port 5000</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-label">API Latency</div>
+          <div class="stat-value" id="stat-latency">—<span class="stat-unit">ms</span></div>
+          <div class="stat-delta neu">last health check</div>
+        </div>
+      </div>
+
+      <div class="grid2">
+        <div class="card">
+          <div class="card-title">Service Status</div>
+          <table class="log-table">
+            <thead><tr><th>Service</th><th>Port</th><th>Status</th></tr></thead>
+            <tbody id="service-table">
+              <tr><td>Search API</td><td class="t-dim" style="font-family:var(--mono)">8000</td><td><span class="badge run">checking…</span></td></tr>
+              <tr><td>MLflow</td><td class="t-dim" style="font-family:var(--mono)">5000</td><td><span class="badge run">checking…</span></td></tr>
+              <tr><td>Airflow</td><td class="t-dim" style="font-family:var(--mono)">8080</td><td><span class="badge skip">indirect</span></td></tr>
+              <tr><td>Prometheus</td><td class="t-dim" style="font-family:var(--mono)">9090</td><td><span class="badge skip">external</span></td></tr>
+              <tr><td>Grafana</td><td class="t-dim" style="font-family:var(--mono)">3001</td><td><span class="badge skip">external</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Quick Actions</div>
+          <div style="display:flex;flex-direction:column;gap:10px">
+            <button class="btn btn-primary" onclick="triggerPipeline()">
+              ▶ Trigger DAG Run
+            </button>
+            <button class="btn btn-ghost" onclick="reloadFaiss()">
+              ↻ Reload FAISS Index
+            </button>
+            <button class="btn btn-ghost" onclick="navigate('search')">
+              ⌕ Open Product Search
+            </button>
+            <button class="btn btn-ghost" onclick="window.open('http://localhost:8080','_blank')">
+              ⊞ Open Airflow UI ↗
+            </button>
+            <button class="btn btn-ghost" onclick="window.open('http://localhost:5000','_blank')">
+              ◈ Open MLflow UI ↗
+            </button>
+            <button class="btn btn-ghost" onclick="window.open('http://localhost:3001','_blank')">
+              ◎ Open Grafana ↗
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Health JSON</div>
+        <div class="terminal" style="margin:0">
+          <div class="terminal-bar">
+            <div class="t-dot r"></div><div class="t-dot y"></div><div class="t-dot g"></div>
+            <div class="terminal-title">GET /health</div>
+          </div>
+          <div class="terminal-body" id="health-raw">
+            <div class="terminal-line t-dim">Fetching health endpoint…</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════ SEARCH ═══════════════════════ -->
+    <div class="page" id="page-search">
+      <div class="page-title">Product Search</div>
+      <div class="page-sub">Query the CLIP-powered FAISS index — text, image, or multimodal</div>
+
+      <div class="search-box">
+        <div class="search-tabs">
+          <div class="stab active" onclick="setSearchMode('text',this)">Text</div>
+          <div class="stab" onclick="setSearchMode('image',this)">Image</div>
+          <div class="stab" onclick="setSearchMode('multimodal',this)">Multimodal</div>
+        </div>
+
+        <div id="search-text-panel">
+          <div class="search-row">
+            <div class="search-field">
+              <div class="field-label">QUERY TEXT</div>
+              <input class="field-input" id="text-query" placeholder='e.g. "blue running shoes for men"' onkeydown="if(event.key==='Enter')runSearch()"/>
+            </div>
+            <div>
+              <div class="field-label">TOP K</div>
+              <select class="topk-select" id="topk-text">
+                <option value="5">5</option>
+                <option value="10" selected>10</option>
+                <option value="20">20</option>
+              </select>
+            </div>
+            <button class="search-btn" onclick="runSearch()">Search</button>
+          </div>
+        </div>
+
+        <div id="search-image-panel" style="display:none">
+          <div class="search-row" style="align-items:flex-start">
+            <div class="search-field">
+              <div class="field-label">UPLOAD IMAGE</div>
+              <div class="upload-zone" id="upload-zone" onclick="document.getElementById('img-file').click()">
+                <input type="file" id="img-file" accept="image/*" onchange="handleImageUpload(this)">
+                <div id="upload-label">📷 Click or drag an image here</div>
+              </div>
+            </div>
+            <div>
+              <div class="field-label">TOP K</div>
+              <select class="topk-select" id="topk-image">
+                <option value="5">5</option>
+                <option value="10" selected>10</option>
+                <option value="20">20</option>
+              </select>
+            </div>
+            <button class="search-btn" onclick="runSearch()">Search</button>
+          </div>
+        </div>
+
+        <div id="search-multimodal-panel" style="display:none">
+          <div style="display:grid;gap:10px">
+            <div class="search-row">
+              <div class="search-field">
+                <div class="field-label">TEXT QUERY</div>
+                <input class="field-input" id="mm-query" placeholder="Optional text description"/>
+              </div>
+              <div>
+                <div class="field-label">TOP K</div>
+                <select class="topk-select" id="topk-mm">
+                  <option value="5">5</option>
+                  <option value="10" selected>10</option>
+                  <option value="20">20</option>
+                </select>
+              </div>
+            </div>
+            <div class="search-row">
+              <div class="search-field">
+                <div class="field-label">IMAGE (OPTIONAL)</div>
+                <div class="upload-zone" id="mm-upload-zone" onclick="document.getElementById('mm-img-file').click()">
+                  <input type="file" id="mm-img-file" accept="image/*" onchange="handleMMImageUpload(this)">
+                  <div id="mm-upload-label">📷 Optional image</div>
+                </div>
+              </div>
+              <button class="search-btn" onclick="runSearch()">Search</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="search-status" style="display:none;text-align:center;padding:20px">
+        <div class="spinner"></div>
+        <div style="color:var(--text3);font-family:var(--mono);font-size:12px;margin-top:8px">Encoding & searching…</div>
+      </div>
+
+      <div id="search-results">
+        <div class="empty-state">
+          <div class="empty-icon">⌕</div>
+          Results will appear here
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════ PIPELINE ═══════════════════════ -->
+    <div class="page" id="page-pipeline">
+      <div class="page-title">Pipeline Visualisation</div>
+      <div class="page-sub">DAG task flow — Apache Airflow orchestrated 12-task pipeline</div>
+
+      <div class="card">
+        <div class="card-title">DAG: clip_product_retrieval_pipeline</div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+          <div>
+            <span class="tag">schedule: 5 min</span>
+            <span class="tag">max_active_runs: 1</span>
+            <span class="tag">catchup: false</span>
+          </div>
+          <button class="btn btn-ghost" onclick="refreshPipelineStatus()">↻ Refresh</button>
+        </div>
+
+        <div class="pipeline-track">
+          <div class="pipeline-nodes" id="pipeline-nodes">
+            <!-- injected by JS -->
+          </div>
+        </div>
+
+        <div id="task-detail" style="margin-top:16px;display:none">
+          <div class="card" style="margin-bottom:0;background:var(--bg3)">
+            <div class="card-title" id="task-detail-name">TASK DETAIL</div>
+            <div id="task-detail-body" style="font-size:13px;color:var(--text2);line-height:1.7"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid2">
+        <div class="card">
+          <div class="card-title">Branch Logic</div>
+          <div style="font-family:var(--mono);font-size:12px;line-height:2;color:var(--text2)">
+            <div><span class="badge skip">branch_on_baseline</span></div>
+            <div style="padding-left:16px;color:var(--text3)">
+              baseline_run_id = None → <span style="color:var(--accent)">initial_train</span><br>
+              baseline_run_id exists  → <span style="color:var(--accent2)">drift_check</span>
+            </div>
+            <br>
+            <div><span class="badge skip">branch_on_drift</span></div>
+            <div style="padding-left:16px;color:var(--text3)">
+              drift_score ≥ 0.30 → <span style="color:var(--accent3)">retrain_model</span><br>
+              drift_score &lt; 0.30 → <span style="color:var(--warn)">skip_training</span>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title">Latest DAG Run</div>
+          <div id="dag-run-info">
+            <div class="terminal-line t-dim">Click Refresh to load DAG run info</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">XCom Data Flow</div>
+        <table class="log-table">
+          <thead><tr><th>XCom Key</th><th>Pushed By</th><th>Consumed By</th></tr></thead>
+          <tbody>
+            <tr><td><code style="color:var(--accent);font-size:11px">incoming_csv</code></td><td>detect_new_data</td><td>augment, drift_check, log_provenance</td></tr>
+            <tr><td><code style="color:var(--accent);font-size:11px">week_label</code></td><td>detect_new_data</td><td>all downstream</td></tr>
+            <tr><td><code style="color:var(--accent);font-size:11px">new_csv_path</code></td><td>augment_texts</td><td>build_replay_buffer, drift_check</td></tr>
+            <tr><td><code style="color:var(--accent);font-size:11px">replay_csv_path</code></td><td>build_replay_buffer</td><td>initial_train, retrain_model</td></tr>
+            <tr><td><code style="color:var(--accent);font-size:11px">drift_detected</code></td><td>drift_check</td><td>branch_on_drift</td></tr>
+            <tr><td><code style="color:var(--accent);font-size:11px">new_run_id</code></td><td>initial_train / retrain / skip</td><td>update_faiss, log_provenance, register</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════ TERMINAL ═══════════════════════ -->
+    <div class="page" id="page-terminal">
+      <div class="page-title">Ops Terminal</div>
+      <div class="page-sub">Run commands against the live system — DVC, FAISS, pipeline triggers</div>
+
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-title">Live Terminal</div>
+        <div class="terminal">
+          <div class="terminal-bar">
+            <div class="t-dot r"></div><div class="t-dot y"></div><div class="t-dot g"></div>
+            <div class="terminal-title">clip-retrieval — ops shell</div>
+          </div>
+          <div class="terminal-body" id="term-output">
+            <div class="terminal-line"><span class="t-prompt">clip@mlops</span><span class="t-dim">:</span><span class="t-info">~</span><span class="t-dim">$</span> <span class="t-cmd">echo "CLIP Product Retrieval Ops Terminal"</span></div>
+            <div class="terminal-line t-ok">CLIP Product Retrieval Ops Terminal</div>
+            <div class="terminal-line t-dim">─────────────────────────────────────────</div>
+            <div class="terminal-line t-out">Type a command below or click a shortcut to run it.</div>
+            <div class="terminal-line t-dim">Commands run against the live API at localhost:8000</div>
+            <div class="terminal-line">&nbsp;</div>
+          </div>
+          <div class="terminal-input-row">
+            <span class="t-prompt-label">clip@mlops:~$</span>
+            <input class="terminal-input" id="term-input" placeholder="type command…" onkeydown="handleTermKey(event)" autocomplete="off" spellcheck="false"/>
+            <button class="t-run-btn" onclick="runTermCmd()">RUN</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Command Reference — Click to Run</div>
+        <div class="cmd-ref" id="cmd-ref-grid">
+          <!-- injected by JS -->
+        </div>
+      </div>
+
+      <div class="grid2" style="margin-top:16px">
+        <div class="card">
+          <div class="card-title">Docker Compose Cheatsheet</div>
+          <div class="manual-code">
+# Start all core services
+docker compose up -d postgres mlflow \\
+  airflow-init airflow-webserver \\
+  airflow-scheduler
+
+# Start serving stack
+docker compose --profile serving up -d
+
+# View logs for a service
+docker compose logs -f search-api
+
+# Restart a service
+docker compose restart search-api
+
+# Check container status
+docker compose ps</div>
+        </div>
+        <div class="card">
+          <div class="card-title">DVC & Reproduce Cheatsheet</div>
+          <div class="manual-code">
+# Run full pipeline (augment+replay+train)
+dvc repro
+
+# Run only augment and replay stages
+dvc repro augment replay
+
+# Check DVC pipeline status
+dvc status
+
+# Push tracked data to remote
+dvc push
+
+# Restore any past week's exact state
+./reproduce.sh week2/run-abc12345
+
+# List available week snapshots
+git tag</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════ MONITORING ═══════════════════════ -->
+    <div class="page" id="page-monitoring">
+      <div class="page-title">Live Metrics</div>
+      <div class="page-sub">API health, vector counts, and system state in near-real-time</div>
+
+      <div class="grid4" style="margin-bottom:16px" id="metric-boxes">
+        <div class="stat-box">
+          <div class="stat-label">Image Vectors</div>
+          <div class="stat-value" id="m-img">—</div>
+          <div class="stat-delta neu">img FAISS index</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-label">Text Vectors</div>
+          <div class="stat-value" id="m-txt">—</div>
+          <div class="stat-delta neu">txt FAISS index</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-label">Meta Entries</div>
+          <div class="stat-value" id="m-meta">—</div>
+          <div class="stat-delta neu">product records</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-label">Index Dim</div>
+          <div class="stat-value" id="m-dim">—<span class="stat-unit">d</span></div>
+          <div class="stat-delta neu">embedding dim</div>
+        </div>
+      </div>
+
+      <div class="grid2">
+        <div class="card">
+          <div class="card-title">External Monitoring Consoles</div>
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <a href="http://localhost:9090" target="_blank" class="btn btn-ghost" style="text-decoration:none;justify-content:space-between">
+              <span>◎ Prometheus</span><span style="color:var(--text3)">:9090 ↗</span>
+            </a>
+            <a href="http://localhost:3001" target="_blank" class="btn btn-ghost" style="text-decoration:none;justify-content:space-between">
+              <span>◈ Grafana Dashboards</span><span style="color:var(--text3)">:3001 ↗</span>
+            </a>
+            <a href="http://localhost:9093" target="_blank" class="btn btn-ghost" style="text-decoration:none;justify-content:space-between">
+              <span>△ Alertmanager</span><span style="color:var(--text3)">:9093 ↗</span>
+            </a>
+            <a href="http://localhost:8000/metrics" target="_blank" class="btn btn-ghost" style="text-decoration:none;justify-content:space-between">
+              <span>/ Prometheus Metrics Endpoint</span><span style="color:var(--text3)">:8000/metrics ↗</span>
+            </a>
+          </div>
+          <hr class="divider">
+          <div style="font-size:12px;color:var(--text3);line-height:1.6">
+            Prometheus scrapes <code style="color:var(--accent)">:8000/metrics</code> every 15s.<br>
+            Alertmanager fires when error rate > 5% or any service is down.<br>
+            Grafana dashboards show request rate, latency histograms, and vector count.
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Polled Health Response</div>
+          <div class="terminal" style="margin:0">
+            <div class="terminal-bar">
+              <div class="t-dot r"></div><div class="t-dot y"></div><div class="t-dot g"></div>
+              <div class="terminal-title">Auto-refresh 30s</div>
+            </div>
+            <div class="terminal-body" id="monitor-health-raw" style="min-height:120px">
+              <div class="terminal-line t-dim">Loading…</div>
+            </div>
+          </div>
+          <div style="margin-top:10px;display:flex;gap:8px">
+            <button class="btn btn-ghost" onclick="refreshMetrics()" style="flex:1">↻ Refresh Now</button>
+            <button class="btn btn-ghost" onclick="reloadFaiss()" style="flex:1">↺ Reload FAISS</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Instrumented Endpoints (Prometheus Exporter)</div>
+        <table class="log-table">
+          <thead><tr><th>Endpoint</th><th>Method</th><th>Metrics Tracked</th></tr></thead>
+          <tbody>
+            <tr><td><code style="color:var(--accent)">/search/text</code></td><td>POST</td><td>request count, latency histogram, status codes</td></tr>
+            <tr><td><code style="color:var(--accent)">/search/image</code></td><td>POST</td><td>request count, latency histogram, status codes</td></tr>
+            <tr><td><code style="color:var(--accent)">/search/multimodal</code></td><td>POST</td><td>request count, latency histogram, status codes</td></tr>
+            <tr><td><code style="color:var(--accent)">/health</code></td><td>GET</td><td>liveness checks, FAISS state</td></tr>
+            <tr><td><code style="color:var(--accent)">/reload</code></td><td>POST</td><td>hot-swap events, vector count delta</td></tr>
+            <tr><td><code style="color:var(--accent)">/metrics</code></td><td>GET</td><td>Prometheus scrape target</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════ DRIFT ═══════════════════════ -->
+    <div class="page" id="page-drift">
+      <div class="page-title">Drift Watchdog</div>
+      <div class="page-sub">Weighted drift score — retraining triggers when score ≥ 0.30</div>
+
+      <div class="grid3" style="margin-bottom:16px">
+        <div class="stat-box">
+          <div class="stat-label">Drift Score</div>
+          <div class="stat-value" id="drift-score-val">—</div>
+          <div class="stat-delta" id="drift-score-label">threshold: 0.30</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-label">Drift Detected</div>
+          <div class="stat-value" id="drift-detected-val">—</div>
+          <div class="stat-delta neu">score ≥ 0.30</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-label">Training Mode</div>
+          <div class="stat-value" style="font-size:18px" id="drift-mode-val">linear_probe</div>
+          <div class="stat-delta neu">current mode</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Signal Breakdown</div>
+        <div style="display:flex;flex-direction:column;gap:18px" id="drift-signals">
+          <div>
+            <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+              <div style="font-size:12px;color:var(--text2)">Embedding Signal <span class="tag">weight 50%</span></div>
+              <div style="font-family:var(--mono);font-size:12px;color:var(--text2)" id="emb-val">—</div>
+            </div>
+            <div class="drift-track"><div class="drift-fill" id="emb-fill" style="width:0%;background:var(--accent2)"></div><div class="drift-threshold"></div></div>
+            <div class="drift-labels"><span>0.0</span><span>threshold 0.30</span><span>1.0</span></div>
+          </div>
+          <div>
+            <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+              <div style="font-size:12px;color:var(--text2)">Recall Drop <span class="tag">weight 25%</span></div>
+              <div style="font-family:var(--mono);font-size:12px;color:var(--text2)" id="recall-val">—</div>
+            </div>
+            <div class="drift-track"><div class="drift-fill" id="recall-fill" style="width:0%;background:var(--accent3)"></div><div class="drift-threshold"></div></div>
+            <div class="drift-labels"><span>0.0</span><span>threshold 0.30</span><span>1.0</span></div>
+          </div>
+          <div>
+            <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+              <div style="font-size:12px;color:var(--text2)">Consistency Drop <span class="tag">weight 25%</span></div>
+              <div style="font-family:var(--mono);font-size:12px;color:var(--text2)" id="consist-val">—</div>
+            </div>
+            <div class="drift-track"><div class="drift-fill" id="consist-fill" style="width:0%;background:var(--warn)"></div><div class="drift-threshold"></div></div>
+            <div class="drift-labels"><span>0.0</span><span>threshold 0.30</span><span>1.0</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Drift Score Formula</div>
+        <div class="manual-code">
+drift_score = 0.50 × embedding_signal
+            + 0.25 × recall_signal
+            + 0.25 × consistency_signal
+
+embedding_signal  = mean(centroid_shift_text, centroid_shift_image,
+                         pairwise_delta_text, pairwise_delta_image)
+
+centroid_shift    = clip(1 − cosine(new_centroid, baseline_centroid), 0, 1)
+
+recall_signal     = mean(relative_drop(R@1), relative_drop(R@5))
+consistency_signal = mean(relative_drop(C@1), relative_drop(C@5))
+
+drift_detected    = drift_score >= 0.30    ← retraining triggered
+        </div>
+        <div style="color:var(--text3);font-size:12px;margin-top:8px;line-height:1.6">
+          Signals are read from the <code style="color:var(--accent)">drift_reference.json</code> artifact logged by the most recent MLflow run.
+          Connect to the Airflow API at <code style="color:var(--accent)">:8080</code> to see per-task drift metrics.
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════ MANUAL ═══════════════════════ -->
+    <div class="page" id="page-manual">
+      <div class="page-title">User Manual</div>
+      <div class="page-sub">Non-technical guide to using the CLIP Product Retrieval System</div>
+
+      <div class="card">
+        <div class="manual-section">
+          <div class="manual-h2">⬡ What is this system?</div>
+          <div class="manual-p">
+            This is an intelligent product search engine powered by a CLIP vision-language model. You can search a product catalogue
+            using natural language, a product image, or both at once. The system automatically learns from new product data every week
+            and only retrains its model when the data has meaningfully changed.
+          </div>
+        </div>
+
+        <hr class="divider">
+
+        <div class="manual-section">
+          <div class="manual-h2">▶ Starting the System</div>
+          <div class="manual-step">
+            <div class="step-num">1</div>
+            <div class="step-body"><strong>Start core infrastructure</strong> — run in the project root:
+              <div class="manual-code">docker compose up -d </div>
+            </div>
+          </div>
+          <div class="manual-step">
+            <div class="step-num">2</div>
+            <div class="step-body"><strong>Place weekly CSV</strong> — put your product file in <code>data/incoming/</code>:
+              <div class="manual-code">cp /path/to/products.csv data/incoming/week1.csv</div>
+              The CSV must have: <code>h_index, title, image_links, category_2, category_3, selling_price, mrp, highlights, description</code>
+            </div>
+          </div>
+          <div class="manual-step">
+            <div class="step-num">3</div>
+            <div class="step-body"><strong>Wait for the pipeline</strong> — Airflow checks for new CSVs every 5 minutes. Or trigger manually from this dashboard.</div>
+          </div>
+          <div class="manual-step">
+            <div class="step-num">5</div>
+            <div class="step-body"><strong>Open this dashboard</strong> at <code>http://localhost:8000/ui</code> (or open <code>ui/index.html</code> directly).</div>
+          </div>
+        </div>
+
+        <hr class="divider">
+
+        <div class="manual-section">
+          <div class="manual-h2">⌕ Searching for Products</div>
+          <div class="manual-p">Go to <strong>Product Search</strong> in the sidebar. Three modes are available:</div>
+          <div class="manual-step">
+            <div class="step-num">T</div>
+            <div class="step-body"><strong>Text Search</strong> — type any natural language query like <em>"red wireless earbuds under ₹2000"</em> and press Search.</div>
+          </div>
+          <div class="manual-step">
+            <div class="step-num">I</div>
+            <div class="step-body"><strong>Image Search</strong> — upload a product photo and the system will find visually similar products in the catalogue.</div>
+          </div>
+          <div class="manual-step">
+            <div class="step-num">M</div>
+            <div class="step-body"><strong>Multimodal</strong> — combine text and image for the most precise results. Both signals are averaged before searching.</div>
+          </div>
+          <div class="manual-p">Results show two ranked lists: by <em>image similarity</em> and by <em>text similarity</em>. Adjust Top-K to see more or fewer results.</div>
+        </div>
+
+        <hr class="divider">
+
+        <div class="manual-section">
+          <div class="manual-h2">◈ Adding New Weekly Data</div>
+          <div class="manual-step">
+            <div class="step-num">1</div>
+            <div class="step-body">Copy the new CSV to <code>data/incoming/weekN.csv</code> (where N is the week number).</div>
+          </div>
+          <div class="manual-step">
+            <div class="step-num">2</div>
+            <div class="step-body">The Airflow scheduler picks it up within 5 minutes — or click <strong>Trigger DAG Run</strong> on the Dashboard.</div>
+          </div>
+          <div class="manual-step">
+            <div class="step-num">3</div>
+            <div class="step-body">Watch the <strong>Pipeline Viz</strong> page to see each task light up as it runs.</div>
+          </div>
+          <div class="manual-step">
+            <div class="step-num">4</div>
+            <div class="step-body">When the pipeline finishes, the search index is hot-swapped automatically — no downtime.</div>
+          </div>
+        </div>
+
+        <hr class="divider">
+
+        <div class="manual-section">
+          <div class="manual-h2">△ Understanding Drift</div>
+          <div class="manual-p">
+            The system measures how different the new week's product data is from the previous week.
+            If the <strong>drift score reaches 0.30</strong>, the model is retrained. Otherwise, the existing model is reused (saving compute time).
+          </div>
+          <div class="manual-p">Check the <strong>Drift Watch</strong> page to see the current drift score and its three component signals.</div>
+        </div>
+
+        <hr class="divider">
+
+        <div class="manual-section">
+          <div class="manual-h2">◎ Monitoring the System</div>
+          <div class="manual-p">Three monitoring tools are included:</div>
+          <table class="log-table" style="margin-top:8px">
+            <thead><tr><th>Tool</th><th>URL</th><th>What it shows</th></tr></thead>
+            <tbody>
+              <tr><td>Grafana</td><td><a href="http://localhost:3001" target="_blank" style="color:var(--accent)">:3001</a></td><td>Request rate, latency, error rate dashboards</td></tr>
+              <tr><td>Prometheus</td><td><a href="http://localhost:9090" target="_blank" style="color:var(--accent)">:9090</a></td><td>Raw metrics scraper, alert rules</td></tr>
+              <tr><td>Alertmanager</td><td><a href="http://localhost:9093" target="_blank" style="color:var(--accent)">:9093</a></td><td>Fires alerts if error rate > 5%</td></tr>
+              <tr><td>Airflow UI</td><td><a href="http://localhost:8080" target="_blank" style="color:var(--accent)">:8080</a></td><td>DAG runs, task logs, pipeline graph</td></tr>
+              <tr><td>MLflow UI</td><td><a href="http://localhost:5000" target="_blank" style="color:var(--accent)">:5000</a></td><td>Experiment runs, model registry, artifacts</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <hr class="divider">
+
+        <div class="manual-section">
+          <div class="manual-h2">⟲ Reproducing a Past Week</div>
+          <div class="manual-p">Every pipeline run is fully reproducible via a Git tag + DVC data snapshot:</div>
+          <div class="manual-code">
+# List available week snapshots
+git tag
+
+# Restore week2's exact state (model, data, config)
+./reproduce.sh week2/run-abc12345</div>
+          <div class="manual-p">This checks out the git tag, runs <code>dvc pull</code> to restore data files, and prints the corresponding MLflow run ID.</div>
+        </div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<script>
+// ── CONFIG ────────────────────────────────────────────────────────────────────
+const API = 'http://localhost:8000';
+let searchMode = 'text';
+let imageB64   = '';
+let mmImageB64 = '';
+let termHistory = [];
+let termHistIdx = -1;
+
+// ── NAV ───────────────────────────────────────────────────────────────────────
+function navigate(page) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  document.getElementById('page-' + page).classList.add('active');
+  document.querySelectorAll('.nav-item').forEach(n => {
+    if (n.onclick && n.onclick.toString().includes("'" + page + "'")) n.classList.add('active');
+  });
+  if (page === 'monitoring') refreshMetrics();
+  if (page === 'pipeline')   renderPipeline();
+  if (page === 'dashboard')  refreshDashboard();
+}
+
+// ── HEALTH / DASHBOARD ────────────────────────────────────────────────────────
+async function refreshDashboard() {
+  const t0 = Date.now();
+  try {
+    const r = await fetch(API + '/health', {signal: AbortSignal.timeout(4000)});
+    const d = await r.json();
+    const ms = Date.now() - t0;
+
+    document.getElementById('stat-vectors').innerHTML =
+      (d.img_vectors ?? d.meta_entries ?? '—') + '<span class="stat-unit"> products</span>';
+    document.getElementById('stat-vectors-sub').textContent =
+      (d.img_vectors ?? d.meta_entries ?? '?') + ' indexed products';
+    document.getElementById('stat-latency').innerHTML = ms + '<span class="stat-unit">ms</span>';
+    document.getElementById('stat-mlflow').textContent = d.mlflow_healthy ? 'UP' : 'DOWN';
+    document.getElementById('stat-mlflow-sub').textContent = d.mlflow_healthy ? '✓ reachable' : '✗ unreachable';
+
+    document.getElementById('health-raw').innerHTML =
+      '<div class="terminal-line t-ok">HTTP 200 OK — ' + ms + 'ms</div>' +
+      '<div class="terminal-line t-out">' + JSON.stringify(d, null, 2).replace(/\n/g,'<br>').replace(/ /g,'&nbsp;') + '</div>';
+
+    setApiStatus(true, 'API healthy · ' + ms + 'ms');
+
+    // update service table
+    const rows = document.querySelectorAll('#service-table tr');
+    rows[0].cells[2].innerHTML = '<span class="badge success">online</span>';
+    rows[1].cells[2].innerHTML = d.mlflow_healthy
+      ? '<span class="badge success">online</span>'
+      : '<span class="badge fail">offline</span>';
+  } catch (e) {
+    document.getElementById('health-raw').innerHTML = '<div class="terminal-line t-err">ERR: ' + e.message + '</div>';
+    setApiStatus(false, 'API unreachable');
+  }
+}
+
+function setApiStatus(ok, msg) {
+  const el = document.getElementById('api-status');
+  const tx = document.getElementById('api-status-text');
+  el.className = 'status-pill ' + (ok ? 'ok' : 'err');
+  tx.textContent = msg;
+}
+
+// ── SEARCH ────────────────────────────────────────────────────────────────────
+function setSearchMode(mode, el) {
+  searchMode = mode;
+  document.querySelectorAll('.stab').forEach(t => t.classList.remove('active'));
+  el.classList.add('active');
+  document.getElementById('search-text-panel').style.display = mode === 'text' ? '' : 'none';
+  document.getElementById('search-image-panel').style.display = mode === 'image' ? '' : 'none';
+  document.getElementById('search-multimodal-panel').style.display = mode === 'multimodal' ? '' : 'none';
+}
+
+function handleImageUpload(input) {
+  if (!input.files[0]) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    imageB64 = e.target.result.split(',')[1];
+    document.getElementById('upload-zone').classList.add('has-file');
+    document.getElementById('upload-label').textContent = '✓ ' + input.files[0].name;
+  };
+  reader.readAsDataURL(input.files[0]);
+}
+
+function handleMMImageUpload(input) {
+  if (!input.files[0]) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    mmImageB64 = e.target.result.split(',')[1];
+    document.getElementById('mm-upload-zone').classList.add('has-file');
+    document.getElementById('mm-upload-label').textContent = '✓ ' + input.files[0].name;
+  };
+  reader.readAsDataURL(input.files[0]);
+}
+
+async function runSearch() {
+  const status = document.getElementById('search-status');
+  const results = document.getElementById('search-results');
+  status.style.display = 'block';
+  results.innerHTML = '';
+
+  let endpoint, body;
+  if (searchMode === 'text') {
+    const q = document.getElementById('text-query').value.trim();
+    if (!q) { alert('Please enter a search query.'); status.style.display='none'; return; }
+    endpoint = '/search/text';
+    body = { query: q, top_k: parseInt(document.getElementById('topk-text').value) };
+  } else if (searchMode === 'image') {
+    if (!imageB64) { alert('Please upload an image.'); status.style.display='none'; return; }
+    endpoint = '/search/image';
+    body = { image_b64: imageB64, top_k: parseInt(document.getElementById('topk-image').value) };
+  } else {
+    endpoint = '/search/multimodal';
+    body = {
+      query:     document.getElementById('mm-query').value.trim(),
+      image_b64: mmImageB64,
+      top_k:     parseInt(document.getElementById('topk-mm').value)
+    };
+  }
+
+  try {
+    const r = await fetch(API + endpoint, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(body)
+    });
+    const d = await r.json();
+    status.style.display = 'none';
+    renderResults(d);
+  } catch (e) {
+    status.style.display = 'none';
+    results.innerHTML = '<div class="empty-state"><div class="t-err">Error: ' + e.message + '</div><div style="margin-top:8px;font-size:11px">Is the search API running at localhost:8000?</div></div>';
+  }
+}
+
+function renderResults(data) {
+  const el = document.getElementById('search-results');
+  let html = '';
+
+  // Support both old (results) and new (image_results/text_results) shapes
+  const imageResults = data.image_results || data.results || [];
+  const textResults  = data.text_results  || [];
+
+  if (imageResults.length === 0 && textResults.length === 0) {
+    el.innerHTML = '<div class="empty-state"><div class="empty-icon">∅</div>No results found</div>';
+    return;
+  }
+
+  if (imageResults.length) {
+    html += '<div class="results-section-title">Image-Space Results</div>';
+    html += '<div class="results-grid">' + imageResults.map(renderCard).join('') + '</div>';
+  }
+  if (textResults.length) {
+    html += '<div class="results-section-title">Text-Space Results</div>';
+    html += '<div class="results-grid">' + textResults.map(renderCard).join('') + '</div>';
+  }
+  el.innerHTML = html;
+}
+
+function renderCard(item) {
+  const score = typeof item.score === 'number' ? item.score.toFixed(3) : '—';
+  const title = (item.title || item.augmented_text || '').substring(0, 80);
+  const cat   = [item.category_2, item.category_3].filter(Boolean).join(' › ');
+  const imgUrl = item.image_url || '';
+  const imgHtml = imgUrl
+    ? `<div class="result-img"><img src="${imgUrl}" loading="lazy" onerror="this.parentElement.textContent='📦'"/></div>`
+    : `<div class="result-img">📦</div>`;
+  return `<div class="result-card">
+    ${imgHtml}
+    <div class="result-body">
+      ${cat ? `<div class="result-cat">${cat}</div>` : ''}
+      <div class="result-title">${title}</div>
+      <span class="result-score">score ${score}</span>
+    </div>
+  </div>`;
+}
+
+// ── PIPELINE VIZ ──────────────────────────────────────────────────────────────
+const TASKS = [
+  { id:'detect_new_data',      label:'detect\nnew data',       icon:'📥', desc:'Scans data/incoming/ for unprocessed CSVs. Uses XCom to pass week_label and incoming_csv path downstream.' },
+  { id:'dvc_pull_latest',      label:'dvc pull\nlatest',        icon:'⬇', desc:'Initialises Git/DVC, configures local remote, pulls tracked data from the DVC remote storage.' },
+  { id:'augment_texts',        label:'augment\ntexts',          icon:'✏', desc:'Applies 7 text augmentation strategies (title_clean, category_prefix, price_context, highlights_fusion, description_snippet, keyword_drop, attribute_reorder). Outputs weekN_augmented.csv.' },
+  { id:'build_replay_buffer',  label:'replay\nbuffer',          icon:'♻', desc:'Mixes current-week data with hard negatives and random samples from previous weeks. Prevents catastrophic forgetting.' },
+  { id:'branch_on_baseline',   label:'branch:\nbaseline?',      icon:'⑂', desc:'If no baseline_run_id → initial_train (Day-0). If baseline exists → drift_check (Week N).' },
+  { id:'drift_check',          label:'drift\ncheck',            icon:'△', desc:'Computes weighted drift score: 20% embedding signal + 40% recall drop + 40% consistency drop. Threshold: 0.30.' },
+  { id:'branch_on_drift',      label:'branch:\ndrift?',         icon:'⑂', desc:'drift_score ≥ 0.30 → retrain_model. drift_score < 0.30 → skip_training.' },
+  { id:'initial_train',        label:'initial\ntrain',          icon:'🎓', desc:'Day-0: trains linear probe (frozen CLIP + 512→512 projection head) with InfoNCE loss. Logs to MLflow.' },
+  { id:'retrain_model',        label:'retrain\nmodel',          icon:'🔁', desc:'Week N (drift detected): retrains linear probe on replay buffer. Logs checkpoints and drift_reference.json to MLflow.' },
+  { id:'update_faiss_index',   label:'update\nFAISS',           icon:'⬡', desc:'Embeds full corpus through CLIP, builds FAISS IndexFlatIP (image + text). Saves index_img.bin, index_txt.bin, meta.json.' },
+  { id:'log_provenance',       label:'log\nprovenance',         icon:'📋', desc:'Tags MLflow run with git commit + DVC lock hash. Updates params.yaml. Commits and tags weekN/run-XXXXXXXX.' },
+  { id:'register_model',       label:'register\nmodel',         icon:'📦', desc:'Registers CLIPRetrieverModel as MLflow pyfunc. Promotes to Production stage in Model Registry.' },
+  { id:'start_serving',        label:'start\nserving',          icon:'▶', desc:'Restarts mlflow_serve and search_api Docker containers with the new model.' },
+  { id:'reload_faiss_index',   label:'reload\nFAISS',           icon:'⟳', desc:'Calls POST /reload to hot-swap FAISS index in the running search API without downtime.' },
+];
+
+const TASK_INFO = {};
+TASKS.forEach(t => TASK_INFO[t.id] = t);
+
+function renderPipeline() {
+  const container = document.getElementById('pipeline-nodes');
+  container.innerHTML = TASKS.map(t => `
+    <div class="pipeline-node" onclick="showTaskDetail('${t.id}')">
+      <div class="pipeline-dot idle" id="dot-${t.id}" title="${t.id}">${t.icon}</div>
+      <div class="pipeline-label">${t.label}</div>
+    </div>
+  `).join('');
+}
+
+function showTaskDetail(id) {
+  const t = TASK_INFO[id];
+  if (!t) return;
+  const det = document.getElementById('task-detail');
+  document.getElementById('task-detail-name').textContent = t.id;
+  document.getElementById('task-detail-body').innerHTML =
+    `<strong style="color:var(--text)">${t.icon} ${t.id}</strong><br><br>${t.desc}`;
+  det.style.display = 'block';
+}
+
+async function refreshPipelineStatus() {
+  try {
+    const r = await fetch(API + '/pipeline/status');
+    const d = await r.json();
+    const el = document.getElementById('dag-run-info');
+    if (d.state) {
+      el.innerHTML = `
+        <div class="terminal-line"><span class="t-dim">run_id: </span><span class="t-info">${d.dag_run_id || '—'}</span></div>
+        <div class="terminal-line"><span class="t-dim">state:  </span><span class="${d.state==='success'?'t-ok':d.state==='running'?'t-info':'t-err'}">${d.state}</span></div>
+        <div class="terminal-line"><span class="t-dim">start:  </span><span class="t-out">${d.start_date || '—'}</span></div>
+        <div class="terminal-line"><span class="t-dim">end:    </span><span class="t-out">${d.end_date || '—'}</span></div>
+      `;
+      // Animate dots
+      const state = d.state;
+      document.querySelectorAll('.pipeline-dot').forEach(dot => {
+        dot.className = 'pipeline-dot ' + (state === 'success' ? 'done' : state === 'running' ? 'run' : 'idle');
+      });
+    } else {
+      el.innerHTML = '<div class="terminal-line t-dim">No DAG runs found</div>';
+    }
+  } catch(e) {
+    document.getElementById('dag-run-info').innerHTML = '<div class="terminal-line t-err">Could not fetch: ' + e.message + '</div>';
+  }
+}
+
+// ── TERMINAL ─────────────────────────────────────────────────────────────────
+const COMMANDS = [
+  { cmd: 'GET /health',              desc: 'Check API health & FAISS state', action: () => apiGet('/health') },
+  { cmd: 'GET /ready',               desc: 'Check if FAISS index is loaded', action: () => apiGet('/ready') },
+  { cmd: 'POST /reload',             desc: 'Hot-swap FAISS index from disk',  action: () => apiPost('/reload', {}) },
+  { cmd: 'POST /pipeline/trigger',   desc: 'Trigger Airflow DAG run',         action: () => apiPost('/pipeline/trigger', {}) },
+  { cmd: 'GET /pipeline/status',     desc: 'Latest DAG run status',           action: () => apiGet('/pipeline/status') },
+  { cmd: 'GET /terminal/faiss-info', desc: 'FAISS index metadata',            action: () => apiGet('/terminal/faiss-info') },
+  { cmd: 'GET /terminal/env',        desc: 'Safe env vars for debugging',     action: () => apiGet('/terminal/env') },
+  { cmd: 'GET /terminal/logs?tail=30', desc: 'Last 30 lines of uvicorn log', action: () => apiGet('/terminal/logs?tail=30') },
+  { cmd: 'POST /terminal/dvc-status', desc: 'Run dvc status in project root', action: () => apiPost('/terminal/dvc-status', {}) },
+  { cmd: 'POST /terminal/dvc-push',  desc: 'Push DVC data to remote',         action: () => apiPost('/terminal/dvc-push', {}) },
+  { cmd: 'GET /metrics',             desc: 'Prometheus metrics endpoint',     action: () => apiGet('/metrics') },
+];
+
+function renderCmdRef() {
+  const el = document.getElementById('cmd-ref-grid');
+  el.innerHTML = COMMANDS.map((c, i) => `
+    <div class="cmd-item" onclick="runShortcut(${i})">
+      <div class="cmd-code">${c.cmd}</div>
+      <div class="cmd-desc">${c.desc}</div>
+    </div>
+  `).join('');
+}
+
+function runShortcut(i) {
+  const c = COMMANDS[i];
+  termPrint('prompt', c.cmd);
+  c.action();
+}
+
+function handleTermKey(e) {
+  if (e.key === 'Enter') { runTermCmd(); return; }
+  if (e.key === 'ArrowUp') {
+    termHistIdx = Math.min(termHistIdx + 1, termHistory.length - 1);
+    e.target.value = termHistory[termHistIdx] || '';
+    e.preventDefault();
+  }
+  if (e.key === 'ArrowDown') {
+    termHistIdx = Math.max(termHistIdx - 1, -1);
+    e.target.value = termHistIdx < 0 ? '' : termHistory[termHistIdx];
+    e.preventDefault();
+  }
+}
+
+function runTermCmd() {
+  const input = document.getElementById('term-input');
+  const cmd = input.value.trim();
+  if (!cmd) return;
+  termHistory.unshift(cmd);
+  termHistIdx = -1;
+  input.value = '';
+  termPrint('prompt', cmd);
+
+  // Parse and dispatch
+  const lower = cmd.toLowerCase();
+  if (lower.startsWith('get ')) {
+    apiGet(cmd.slice(4).trim());
+  } else if (lower.startsWith('post ')) {
+    const parts = cmd.slice(5).trim().split(' ');
+    let body = {};
+    if (parts[1]) { try { body = JSON.parse(parts.slice(1).join(' ')); } catch {} }
+    apiPost(parts[0], body);
+  } else if (lower === 'clear') {
+    document.getElementById('term-output').innerHTML = '';
+  } else if (lower === 'help') {
+    termPrint('out', 'Available commands:\n' + COMMANDS.map(c => '  ' + c.cmd + '  — ' + c.desc).join('\n'));
+  } else {
+    termPrint('err', 'Unknown command. Try: GET /health, POST /reload, or type "help"');
+  }
+}
+
+function termPrint(type, text) {
+  const el = document.getElementById('term-output');
+  const div = document.createElement('div');
+  div.className = 'terminal-line';
+  if (type === 'prompt') {
+    div.innerHTML = '<span class="t-prompt">clip@mlops</span><span class="t-dim">:~$</span> <span class="t-cmd">' + escHtml(text) + '</span>';
+  } else if (type === 'ok')   div.innerHTML = '<span class="t-ok">'  + escHtml(text) + '</span>';
+  else if (type === 'err')  div.innerHTML = '<span class="t-err">' + escHtml(text) + '</span>';
+  else if (type === 'warn') div.innerHTML = '<span class="t-warn">'+ escHtml(text) + '</span>';
+  else if (type === 'json') div.innerHTML = '<span class="t-out" style="white-space:pre">' + escHtml(JSON.stringify(text, null, 2)) + '</span>';
+  else div.innerHTML = '<span class="t-out">' + escHtml(text) + '</span>';
+  el.appendChild(div);
+  el.scrollTop = el.scrollHeight;
+}
+
+function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+async function apiGet(path) {
+  try {
+    const r = await fetch(API + path);
+    const ct = r.headers.get('content-type') || '';
+    if (ct.includes('application/json')) {
+      const d = await r.json();
+      termPrint('json', d);
+    } else {
+      const t = await r.text();
+      termPrint('out', t.substring(0, 2000));
+    }
+  } catch(e) { termPrint('err', 'Error: ' + e.message); }
+}
+
+async function apiPost(path, body) {
+  try {
+    const r = await fetch(API + path, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(body)
+    });
+    const d = await r.json();
+    termPrint('json', d);
+  } catch(e) { termPrint('err', 'Error: ' + e.message); }
+}
+
+// ── MONITORING ────────────────────────────────────────────────────────────────
+async function refreshMetrics() {
+  try {
+    const r = await fetch(API + '/health');
+    const d = await r.json();
+    document.getElementById('m-img').textContent  = d.img_vectors  ?? d.meta_entries ?? '—';
+    document.getElementById('m-txt').textContent  = d.txt_vectors  ?? '—';
+    document.getElementById('m-meta').textContent = d.meta_entries ?? '—';
+    document.getElementById('m-dim').innerHTML    = (d.dim ?? '—') + '<span class="stat-unit">d</span>';
+    document.getElementById('monitor-health-raw').innerHTML =
+      '<div class="terminal-line t-ok">HTTP 200</div>' +
+      '<div class="terminal-line t-out" style="white-space:pre">' + escHtml(JSON.stringify(d, null, 2)) + '</div>';
+  } catch(e) {
+    document.getElementById('monitor-health-raw').innerHTML = '<div class="terminal-line t-err">' + e.message + '</div>';
+  }
+}
+
+// ── ACTIONS ───────────────────────────────────────────────────────────────────
+async function triggerPipeline() {
+  try {
+    const r = await fetch(API + '/pipeline/trigger', { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' });
+    const d = await r.json();
+    alert('Pipeline triggered! ' + JSON.stringify(d));
+  } catch(e) { alert('Error: ' + e.message); }
+}
+
+async function reloadFaiss() {
+  try {
+    const r = await fetch(API + '/reload', { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' });
+    const d = await r.json();
+    alert('FAISS reloaded! ' + JSON.stringify(d));
+    refreshDashboard();
+  } catch(e) { alert('Error: ' + e.message); }
+}
+
+// ── DRIFT DATA (attempts live fetch; shows clear placeholder if unavailable) ──
+async function renderDriftDemo() {
+  let score = null, emb = null, rec = null, con = null;
+  try {
+    const r = await fetch(API + '/health', { signal: AbortSignal.timeout(3000) });
+    if (r.ok) {
+      const d = await r.json();
+      if (typeof d.drift_score === 'number') {
+        score = d.drift_score;
+        emb   = d.embedding_signal   ?? 0;
+        rec   = d.recall_signal      ?? 0;
+        con   = d.consistency_signal ?? 0;
+      }
+    }
+  } catch (_) { /* API unreachable */ }
+
+  if (score === null) {
+    // No live data — show unambiguous placeholder instead of misleading zeros
+    document.getElementById('drift-score-val').textContent    = '—';
+    document.getElementById('drift-score-label').textContent  = 'Live data unavailable — connect to MLflow';
+    document.getElementById('drift-score-label').className    = 'stat-delta neu';
+    document.getElementById('drift-detected-val').textContent = '—';
+    document.getElementById('drift-detected-val').style.color = 'var(--text3)';
+    ['emb-val','recall-val','consist-val'].forEach(id => {
+      document.getElementById(id).textContent = '—';
+    });
+    return;
+  }
+
+  document.getElementById('drift-score-val').textContent = score.toFixed(2);
+  document.getElementById('drift-score-label').textContent = score >= 0.30 ? '⚠ Retraining triggered' : 'Below threshold — no retrain';
+  document.getElementById('drift-score-label').className = 'stat-delta ' + (score >= 0.30 ? 'dn' : 'up');
+  document.getElementById('drift-detected-val').textContent = score >= 0.30 ? 'YES' : 'NO';
+  document.getElementById('drift-detected-val').style.color = score >= 0.30 ? 'var(--red)' : 'var(--accent)';
+  document.getElementById('emb-val').textContent     = emb.toFixed(2);
+  document.getElementById('recall-val').textContent  = rec.toFixed(2);
+  document.getElementById('consist-val').textContent = con.toFixed(2);
+  setTimeout(() => {
+    document.getElementById('emb-fill').style.width     = (emb * 100) + '%';
+    document.getElementById('recall-fill').style.width  = (rec * 100) + '%';
+    document.getElementById('consist-fill').style.width = (con * 100) + '%';
+  }, 200);
+}
+
+// ── INIT ──────────────────────────────────────────────────────────────────────
+renderPipeline();
+renderCmdRef();
+renderDriftDemo();
+refreshDashboard();
+
+// Auto-refresh dashboard every 30s
+setInterval(refreshDashboard, 30000);
+</script>
+</body>
+</html>

@@ -1,0 +1,31 @@
+# MLFLOW tracking server Dockerfile
+# no ml libraries are needed, only mlflow server and its dependencies
+FROM python:3.11-slim
+
+# Keeps Python from buffering stdout/stderr
+# You want logs to appear immediately in docker logs
+ENV PYTHONUNBUFFERED=1
+
+WORKDIR /docker/mlflow
+
+COPY ./docker/mlflow/requirements.mlflow.txt /tmp/mlflow-requirements.txt
+
+RUN pip install --no-cache-dir \
+    -r /tmp/mlflow-requirements.txt
+
+# Directory where artifacts will be stored inside the container
+# This maps to the volume you define in docker-compose
+# [REVISIT]
+RUN mkdir -p /docker/mlflow/artifacts 
+
+EXPOSE 5000
+
+# All connection details come from env vars set in docker-compose
+# --host 0.0.0.0 is critical — without it the server only listens
+# on localhost inside the container and is unreachable from outside
+CMD mlflow server \
+    --backend-store-uri postgresql://${MLFLOW_DB_USER}:${MLFLOW_DB_PASSWORD}@${MLFLOW_DB_HOST}:5432/${MLFLOW_DB_NAME} \
+    --artifacts-destination /mlflow/artifacts \
+    --host 0.0.0.0 \
+    --port 5000 \
+    --gunicorn-opts "--forwarded-allow-ips=*"

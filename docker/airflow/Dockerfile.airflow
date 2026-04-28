@@ -1,0 +1,31 @@
+FROM apache/airflow:3.2.0
+
+USER root
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    build-essential \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN git config --system --add safe.directory /opt/project
+RUN git config --global --add safe.directory /opt/project
+RUN apt-get update && apt-get install -y docker-compose-plugin
+
+USER airflow
+
+# [Careful with path: path is relative to project root(DA5402_E2E), not to airflow home]
+COPY ./docker/airflow/requirements.airflow.txt /tmp/airflow-requirements.txt
+
+RUN pip install --no-cache-dir \
+    -r /tmp/airflow-requirements.txt \
+    --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-3.2.0/constraints-3.13.txt" \
+    --extra-index-url https://download.pytorch.org/whl/cpu
+
+RUN pip install --no-cache-dir "pathspec>=0.12.0"
+RUN pip install docker requests
+RUN git config --global user.email "airflow@pipeline" && \
+    git config --global user.name "Airflow Pipeline"
+
+# [Careful with path: path is relative to project root(DA5402_E2E), not to airflow home]
+COPY --chown=airflow:root src/ /opt/airflow/src

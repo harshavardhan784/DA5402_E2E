@@ -1,0 +1,249 @@
+x-airflow-common: &airflow-common
+  build:
+    context: .
+    dockerfile: docker/airflow/Dockerfile.airflow
+  image: airflow-clip
+  environment:
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow123@postgres/airflow
+    AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__FERNET_KEY: ""
+    AIRFLOW__CORE__DAGBAG_IMPORT_TIMEOUT: 150
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: "http://airflow-webserver:8080/execution/"
+    AIRFLOW__API__SECRET_KEY: "your-api-secret-key-at-least-64-characters-long-for-sha512-hmac-ok"
+    AIRFLOW__API_AUTH__JWT_SECRET: "your-jwt-secret-must-be-at-least-64-characters-long-for-sha512-hmac"
+    AIRFLOW__API_AUTH__JWT_ISSUER: "airflow"
+    MLFLOW_TRACKING_URI: http://mlflow:5000
+    MLFLOW_EXPERIMENT: clip_product_retrieval
+    DATA_DIR: /opt/project/data
+    SRC_DIR: /opt/project/src
+    ROOT_DIR: /opt/project
+    META_DIR: /opt/project/data/meta
+    PYTHONPATH: /opt/project/src
+    SEARCH_API_URL: http://search_api:8000
+    AIRFLOW__CORE__DAGS_FOLDER: /opt/project/dags
+
+  volumes:
+    - ./dvc-remote:/opt/project/dvc-remote
+    - ./:/opt/project                          # project root → /opt/project (not /opt)
+    - /var/run/docker.sock:/var/run/docker.sock
+    - airflow_logs:/opt/airflow/logs           # airflow owns its own logs dir
+    - airflow_plugins:/opt/airflow/plugins     # airflow owns its own plugins dir
+
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+services:
+
+  postgres:
+    image: postgres:15
+    container_name: postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres123
+      POSTGRES_MULTIPLE_DATABASES: airflow,mlflow
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/create-multiple-dbs.sh:/docker-entrypoint-initdb.d/create-multiple-dbs.sh
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mlflow:
+    build:
+      context: .
+      dockerfile: docker/mlflow/Dockerfile.mlflow
+    container_name: mlflow
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      MLFLOW_DB_USER: mlflow
+      MLFLOW_DB_PASSWORD: mlflow123
+      MLFLOW_DB_HOST: postgres
+      MLFLOW_DB_NAME: mlflow
+      MLFLOW_SERVER_ALLOWED_HOSTS: "*"
+
+    volumes:
+      - mlflow_artifacts:/mlflow/artifacts
+    ports:
+      - "5000:5000"
+
+  airflow-init:
+    <<: *airflow-common
+    # user: "0:0"
+    container_name: airflow_init
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        airflow db migrate &&
+        airflow users create \
+          --username admin \
+          --password admin \
+          --firstname Admin \
+          --lastname User \
+          --role Admin \
+          --email admin@example.com
+    restart: "no"
+
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: airflow_webserver
+    command: api-server
+    hostname: airflow-webserver
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/monitor/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    ports:
+      - "8080:8080"
+    restart: always
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: airflow_scheduler
+    command: scheduler
+    hostname: airflow-scheduler
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+      airflow-webserver:
+        condition: service_healthy
+    restart: always
+
+  mlflow-serve:
+    build:
+      context: .
+      dockerfile: docker/serve/Dockerfile.serve
+    container_name: mlflow_serve
+    command: >
+      mlflow models serve
+        --model-uri "models:/clip_product_retrieval@Production"
+        --host 0.0.0.0
+        --port 5001
+        --no-conda
+        --workers 2
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      DATA_DIR: /opt/project/data
+      PYTHONPATH: /opt/project:/opt/project/src
+    volumes:
+      - ./:/opt/project
+      - mlflow_artifacts:/mlflow/artifacts
+    ports:
+      - "5001:5001"
+    depends_on:
+      - mlflow
+    restart: on-failure
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5001/ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  search-api:
+    build:
+      context: .
+      dockerfile: docker/serve/Dockerfile.serve
+    container_name: search_api
+    command: >
+      uvicorn src.search_api:app
+        --host 0.0.0.0
+        --port 8000
+        --workers 2
+        --log-level info
+    environment:
+      AIRFLOW_DAG_ID: clip_product_retrieval_pipeline
+      MLFLOW_SERVE_URL: http://mlflow-serve:5001
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      DATA_DIR: /opt/project/data
+      PYTHONPATH: /opt/project:/opt/project/src
+    volumes:
+      - ./:/opt/project
+    ports:
+      - "8000:8000"
+    depends_on:
+      - mlflow
+    restart: on-failure
+
+# ── Monitoring ───────────────────────────────────────────────────────────
+
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --web.enable-lifecycle          # lets you reload config via POST /-/reload
+    volumes:
+      - ./monitoring/prometheus:/etc/prometheus
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:10.4.2
+    container_name: grafana
+    environment:
+      GF_SECURITY_ADMIN_USER:     admin
+      GF_SECURITY_ADMIN_PASSWORD: admin123
+      GF_USERS_ALLOW_SIGN_UP:     "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards
+    ports:
+      - "3001:3000"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: alertmanager
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    volumes:
+      - ./monitoring/alertmanager:/etc/alertmanager
+      - alertmanager_data:/alertmanager
+    ports:
+      - "9093:9093"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.15.0
+    container_name: postgres_exporter
+    environment:
+      DATA_SOURCE_NAME: "postgresql://postgres:postgres123@postgres:5432/postgres?sslmode=disable"
+    ports:
+      - "9187:9187"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+
+volumes:
+  postgres_data:
+  mlflow_artifacts:
+  airflow_logs:
+  airflow_plugins:
+  prometheus_data:      # ← add
+  grafana_data:         # ← add
+  alertmanager_data:    # ← add
+

@@ -1,0 +1,66 @@
+# DVC pipeline definition for the CLIP-based product retrieval project.
+# Defines three stages: augment, replay, and train.
+# This dvc repro tells about if I ran the pipeline fresh with week2's or week k's params, do I get the same outputs?" — this can be seen a verification/debugging tool, not a restore tool
+# For Restoring code repo state, data state -> reproduce.sh.
+# It generates the data and trains the model as well, So, if you don't want training happening, 'dvc repro augment replay'
+
+stages:
+
+  # DVC Stage 1: augment
+  # Applies 7 text-augmentation strategies to the raw incoming CSV.
+  augment:
+    cmd: python src/data/augment_texts.py
+         --input data/incoming/${week}.csv
+         --output data/processed/${week}_augment.csv
+    params:
+      - week
+    deps:
+      - src/data/augment_texts.py
+      - data/incoming/${week}.csv
+    outs:
+      - data/processed/${week}_augment.csv
+
+  # DVC Stage 2: replay
+  # params.yaml values to set before each `dvc repro`:
+  #   week1 (Day-0): week=week1  prev_week=""      run_id=init   week_number=1
+  #   week2        : week=week2  prev_week=week1   run_id=<w1>   week_number=2
+  #   week3        : week=week3  prev_week=week2   run_id=<w2>   week_number=3
+  replay:
+    cmd: python src/pipeline/replay_buffer.py
+         --old_csv data/processed/${prev_week}_replay.csv
+         --new_csv data/processed/${week}_augment.csv
+         --output data/processed/${week}_replay.csv
+         --run_id ${run_id}
+         --tracking_uri ${mlflow_tracking_uri}
+         --week_number ${week_number}
+    params:
+      - week
+      - prev_week
+      - run_id
+      - mlflow_tracking_uri
+      - week_number
+    deps:
+      - src/pipeline/replay_buffer.py
+      - data/processed/${week}_augment.csv
+    outs:
+      - data/processed/${week}_replay.csv
+
+  # DVC Stage 3: train
+  # This stage completes the reproducibility chain.
+  # data/meta/last_run_id.txt ties the DVC data lineage to the MLflow run.
+  train:
+    cmd: python src/pipeline/clip_experiments.py
+         --csv_path data/processed/${week}_replay.csv
+         --mode linear_probe
+         --mlflow_tracking_uri ${mlflow_tracking_uri}
+         --run_id_out data/meta/last_run_id.txt
+    params:
+      - week
+      - mlflow_tracking_uri
+    deps:
+      - src/pipeline/clip_experiments.py
+      - data/processed/${week}_replay.csv
+    outs:
+      - data/meta/last_run_id.txt
+
+# It generates the data and trains the model as well, So, if you don't want training happening, 'dvc repro augment replay'

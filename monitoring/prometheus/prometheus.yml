@@ -1,0 +1,36 @@
+global:
+  scrape_interval:     15s   # pull metrics every 15 s
+  evaluation_interval: 15s   # evaluate alert rules every 15 s
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+scrape_configs:
+
+  # Prometheus scrapes itself
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # FastAPI search-api — exposed via prometheus_fastapi_instrumentator at /metrics
+  - job_name: search_api
+    static_configs:
+      - targets: ["search_api:8000"]
+    metrics_path: /metrics
+
+  # Postgres exporter sidecar
+  - job_name: postgres
+    static_configs:
+      - targets: ["postgres_exporter:9187"]
+
+  # Airflow webserver — /api/v2/monitor/metrics is available in Airflow 2.6+
+  # Remove this block if your Airflow version doesn't expose it
+  - job_name: airflow
+    static_configs:
+      - targets: ["airflow-webserver:8080"]
+    metrics_path: /api/v2/monitor/metrics
