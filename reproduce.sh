@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Restores a past week's exact pipeline state from its git tag.
-# Usage: ./restore.sh week2/run-abc12345
+# cmd: ./reproduce.sh week2/run-abc12345
 
 set -e
 

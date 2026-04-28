@@ -1,3 +1,7 @@
+# Screen Cast Link
+
+https://drive.google.com/file/d/1Q6r0TE4fds5ujRquPjMAcowLaUOB5ZvQ/view?usp=sharing
+
 # CLIP Product Retrieval Pipeline
 
 An end-to-end MLOps system for continual learning on product image-text retrieval using OpenAI's CLIP model (ViT-B/32). The pipeline ingests weekly product CSVs, augments text descriptions, detects embedding drift, retrains a linear probe head when drift is detected, and serves results via a FAISS-backed search API — all orchestrated by Apache Airflow with full MLflow experiment tracking and DVC data versioning.

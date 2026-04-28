@@ -513,7 +513,7 @@ branch_on_drift:
 
 ---
 
-### 2.9 `ui/index.html`
+### 2.9 `templates/index.html`
 
 **Purpose:** Standalone single-page application. No build step, no framework, no server-side dependency. Open directly in any browser.
 
@@ -581,7 +581,7 @@ data/
 └── meta/
     ├── last_run_id.txt
     └── logs_for_revert.yaml
-ui/
+templates/
 └── index.html                   ← standalone frontend — open in browser
 ```
 
